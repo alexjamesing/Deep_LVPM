@@ -1,57 +1,77 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Fri Aug 19 16:06:47 2022
-
-@author: ing
+This script creates a custom Keras/TensorFlow model for identifying correlated factors
+(deep latent variables) between different data types. It is designed to work with different
+data-views, and it establishes associations between these views using deep latent
+variables. The data-views we wish to optimise associations between are defined using an 
+adjacency matrix.
 """
 
 import os
-current_path=os.path.dirname(os.path.realpath(__file__))
-print(current_path)
-
-
 import tensorflow as tf
 import numpy as np
+from FactorLayer import FactorLayer
+from ZCALayer import ZCALayer
+
 # from Custom_Losses_and_Metrics import mse_loss
 # from Custom_Losses_and_Metrics import corr_metric
 
-
+# Set up metrics trackers
 loss_tracker_total = tf.keras.metrics.Mean(name="total_loss")
 loss_tracker_mse = tf.keras.metrics.Mean(name="mean_squared_loss")
 corr_tracker = tf.keras.metrics.Mean(name="corr_metric")
 
-#tf.config.run_functions_eagerly(True)
-
-## changes to git
-
+@tf.keras.saving.register_keras_serializable("StructuralModel")
 class StructuralModel(tf.keras.Model):
     
-    """ This is a custom model that can be used to establish associations 
-    between different data-views. 
-    
-    Args:
-    C_mv: This is a binary adjacency matrix, which defines the data-views that should 
-    be linked via DLVPM. Here, ones represent connections and zeros represent
-    un-connected data-views. In PLS-PM parlance, C_mv defines the structural model.
-    model_list: This is a 1 x nview list of tf.keras models where nview is the 
-    number of data-views under analysis
-    ndims: This is the number of orthogonal latent variables to construct between
-    different data-views.
-    epochs: This is the number of epochs to run through for DNN models
-    tot_num: This is the total number of features associated with the data input, 
-    accross all batches. This number is required for normsalisation
-    orthogonalisation: This is the orthogonalisation procedure, should be 'zca' or 
-    'Moore-Penrose', defaults to 'Moore-Penrose'.
-    
-    
-    
-    
     """
+    A custom Keras model to establish associations between different data-views.
+
+    This model implements a deep learning approach to find deep latent variables (DLVs)
+    that highlight the correlated factors between different types of data.
+    The associations between data-views are defined using a binary adjacency matrix,
+    where ones represent connections, and zeros represent un-connected data-views.
+
+    Attributes:
+        C_mv: A binary adjacency matrix defining the connections between data-views.
+        model_list: A list of Keras models for each data-view.
+        tot_num: Total number of features across all batches.
+        ndims: Number of orthogonal latent variables to construct.
+        epochs: Number of training epochs.
+        batch_size: Size of the batches used during training.
+        orthogonalization: Orthogonalisation procedure ('zca' or 'Moore-Penrose').
+        loss_tracker_total: Tracker for the total loss during training.
+        corr_tracker: Tracker for the correlation metric during training.
+        loss_tracker_mse: Tracker for the mean squared error loss during training.
+
+    Methods:
+        call: Runs data through each of the measurement sub-models.
+        train_step: Performs a training step, updating the model weights.
+        compile: Configures the model for training.
+        test_step: Evaluates the model on a batch of test data.
+        metrics: Returns the list of model's metrics.
+        mse_loss: Calculates mean squared error loss for a data-view.
+        corr_metric: Calculates the correlation metric for a data-view.
+    """
+
     
-    def __init__(self, C_mv, model_list, tot_num, ndims, epochs, batch_size, orthogonalisation='Moore-Penrose'):
+    def __init__(self, C_mv, model_list, regularizer_list, tot_num, ndims, epochs, batch_size, orthogonalization='Moore-Penrose',run_from_config=False, **kwargs):
         
-        super().__init__()    
+        """
+        Initializes the StructuralModel instance.
+
+        Args:
+            C_mv (np.array): A binary adjacency matrix defining connections between data-views.
+            model_list (list): A list of Keras models for each data-view.
+            tot_num (int): Total number of features across all batches.
+            ndims (int): Number of orthogonal latent variables to construct.
+            epochs (int): Number of training epochs.
+            batch_size (int): Size of the batches used during training.
+            orthogonalization (str, optional): Orthogonalisation procedure. Defaults to 'Moore-Penrose'.
+        """
+
+        super().__init__(**kwargs)    
         
         self.C_mv = C_mv
         self.model_list = model_list
@@ -59,15 +79,60 @@ class StructuralModel(tf.keras.Model):
         self.tot_num = tot_num
         self.ndims = ndims
         self.batch_size = batch_size
-        self.orthogonalisation=orthogonalisation
+        self.orthogonalization=orthogonalization
         self.loss_tracker_total = tf.keras.metrics.Mean(name="total_loss")
         self.corr_tracker = tf.keras.metrics.Mean(name="cross_metric")
         self.loss_tracker_mse = tf.keras.metrics.Mean(name="mse_loss")
+        self.regularizer_list = regularizer_list
+
+        if not run_from_config:
+        # Add factor layer to each model in the list
+            self.model_list = [self.add_factor_layer(model, regularizer) for model, regularizer in zip(model_list, regularizer_list)]
+        else:
+            self.model_list = model_list
     
+    def add_DLVPM_layer(self, model, regularizer):
+        """
+        Adds a FactorLayer on top of the given model.
+
+        The method first checks whether the input model is sequential or functional,
+        and then adds the FactorLayer in an appropriate way.
+
+        :param model: A Keras/TensorFlow model (sequential or functional).
+        :return: The model with an added FactorLayer on top.
+        """
+        if isinstance(model, tf.keras.Sequential):
+            # For sequential models, we can just add a new layer on top
+            if self.orthogonalization == 'Moore-Penrose':
+                model.add(FactorLayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims))
+            if self.orthogonalization == 'zca':
+                model.add(ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims))
+            else:
+                print('Orthogonalization mode not recognised, must be "Moore-Penrose" or "zca"')
+        elif isinstance(model, tf.keras.Model):
+            # For functional models, we need to create a new model with the added layer
+            if self.orthogonalization == 'Moore-Penrose':
+                input = model.input
+                x = FactorLayer(kernel_regularizer=regularizer,tot_num=self.tot_num, ndims=self.ndims)(model.output)
+                model = tf.keras.Model(inputs=input, outputs=x)
+            if self.orthogonalization == 'zca':
+                input = model.input
+                x = ZCALayer(kernel_regularizer=regularizer,tot_num=self.tot_num, ndims=self.ndims)(model.output)
+                model = tf.keras.Model(inputs=input, outputs=x)
+        else:
+            raise ValueError("The input model must be either a tf.keras.Sequential or a tf.keras.Model instance.")
+        return model
+
     
     def call(self,inputs):
-        """ This is where the layer logic lives. Here, the global model runs 
-        data through each of the measurement sub-models.
+        """
+        Run data through each of the measurement sub-models.
+
+        Args:
+            inputs (list): A list of inputs for each data-view.
+
+        Returns:
+            tf.Tensor: The output of the model after processing the inputs.
         """
         out=tf.stack([self.model_list[vie](inputs[vie]) for vie in range(len(self.model_list))],axis=2) 
         
@@ -80,14 +145,14 @@ class StructuralModel(tf.keras.Model):
     
     def train_step(self, inputs):
         
-        """ Here, we overwrite the model train step, which is called 
-        during model-fit. We train the Deep-PLS model by alternately iterating 
-        through data-views. For each data-view, the global model loops through
-        the sub-models (measurement models) in each data-view. For each of the
-        sub-models, training is carried out in order to minimise the sum of 
-        squared losses between the latent variable in the view of interest,
-        and other data-views.
-        
+        """
+        Perform a training step, updating the model weights.
+
+        Args:
+            inputs (list): A list of inputs for each data-view.
+
+        Returns:
+            dict: A dictionary containing the total loss, cross metric, and mean squared error loss.
         """
        
         ## inputs is passed by tensorflow as a list of lists, this must be unpacked
@@ -96,14 +161,14 @@ class StructuralModel(tf.keras.Model):
         # Here, we run the current data-iteration through the global model in a forward 
         # pass. We do this so that we can re-normalise the weights. 
         
+        #y = self(inputs, training=True)  ## forward pass
         y = self(inputs, training=False)  ## forward pass
-       # y = self(inputs, training=True)  ## forward pass
     
         scale_fact = tf.cast(self.tot_num/tf.shape(y)[0],dtype=float) #
         
         ## Here, we re-normalise targets. In the case of the zca approach, this normalisation also involves
-        # an orthogonalisation step
-        if self.orthogonalisation=='zca':
+        # an orthogonalization step
+        if self.orthogonalization=='zca':
             ylist = [None]*len(inputs)
             for i in range(y.shape[2]):
                 moving_conv2 = self.model_list[i].layers[-1].moving_conv2
@@ -111,7 +176,7 @@ class StructuralModel(tf.keras.Model):
                 sqrt_inv_y = tf.linalg.sqrtm(tf.linalg.inv(moving_conv2+diag_offset*tf.eye(moving_conv2.shape[0])))
                 ylist[i]=tf.matmul(tf.squeeze(y[:,:,i]),sqrt_inv_y)
             y=tf.stack(ylist,axis=2)
-        elif self.orthogonalisation=='Moore-Penrose':
+        elif self.orthogonalization=='Moore-Penrose':
             y = tf.divide(y,tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(y),axis=0))))  ## re-normlise latent factors, very important!
      
         total_loss = [None]*(len(inputs))
@@ -157,20 +222,6 @@ class StructuralModel(tf.keras.Model):
         
         return {"total_loss": self.loss_tracker_total.result(), "cross_metric": self.corr_tracker.result(), "mse_loss":self.loss_tracker_mse.result()}
 
-    def global_build(self):
-        """ This funnction is called when the structural model is initialised.
-        This function uses global parameters to initialise measurement models
-        with the corect number of dimensions to extract, and correct number of 
-        samples"""
-        
-        for vie in range(len(self.model_list)):
-            
-            # if vie==0:
-            #     self.model_list[vie].global_build(self.tot_num, self.ndims, 'None')
-            # else:
-            self.model_list[vie].global_build(self.tot_num, self.ndims, self.orthogonalisation)
-        
-
     def compile(self, optimizer):
         """ Here, we overwrite the model compilation step. This is necessary as
         normally, the model compilation step would normally take a loss. Using
@@ -181,7 +232,7 @@ class StructuralModel(tf.keras.Model):
         
         super().compile()
         
-        self.global_build()
+        #self.global_build()
         
         if isinstance(optimizer, list):
             for vie in range(len(self.model_list)):
@@ -257,7 +308,7 @@ class StructuralModel(tf.keras.Model):
         
         y_pred = tf.expand_dims(y_pred,axis=2) ## expand dimensions of the predicted latent factor so broadcasting is possible
         
-        return tf.reduce_mean(tf.math.reduce_sum(tf.math.square(tf.subtract(y_true,y_pred)),axis=0))
+        return tf.reduce_sum(tf.math.reduce_sum(tf.math.square(tf.subtract(y_true,y_pred)),axis=0))
     
     def corr_metric(self,y_true,y_pred,vie):
         
@@ -282,6 +333,93 @@ class StructuralModel(tf.keras.Model):
         corr2=tf.math.reduce_sum(tf.math.multiply(y_true_norm, y_pred_norm),axis=0)
 
         return tf.math.reduce_mean(corr2)
+    
 
+    def get_config(self):
 
+        """
+        Gets configuration of the model for serialization.
+
+        Returns:
+            Dictionary containing the configuration of the model.
+        """
+        base_config = super().get_config()
         
+        # Serialize each model in the model list using a list comprehension
+        serialized_model_list = [tf.keras.utils.serialize_keras_object(model) for model in self.model_list]
+        regularized_model_list = [tf.keras.utils.serialize_keras_object(regularizer) for regularizer in self.regularizer_list]
+        
+        config = {
+            "C_mv": self.C_mv.tolist(),
+            "model_list": serialized_model_list,  # Include serialized model list in the configuration
+            "regularizer_list": regularized_model_list,
+            "tot_num": self.tot_num,
+            "ndims": self.ndims,  
+            "epochs": self.epochs,
+            "batch_size": self.batch_size,
+            "orthogonalization": self.orthogonalization
+        }
+    
+        return {**base_config, **config}
+    
+    @classmethod    
+    def from_config(cls, config):
+        """
+        Creates an instance of the class from a config dictionary.
+
+        Args:
+            config (dict): A dictionary containing the configuration of the instance.
+
+        Returns:
+            An instance of the class.
+        """
+        # Deserialize Keras/TensorFlow objects
+        config['C_mv'] = np.array(config['C_mv'])
+        
+        # Deserialize each model in the model list using a list comprehension
+        config['model_list'] = [tf.keras.saving.deserialize_keras_object(model_config) for model_config in config['model_list']]
+        config['run_from_config'] = True
+        
+        # If regularization is present in the config, deserialize it
+        if 'regularizer_list' in config:
+            config['regularizer_list'] = [tf.keras.saving.deserialize_keras_object(regularizer_config) for regularizer_config in config['regularizer_list']]
+        
+        return cls(**config)
+    
+    def get_compile_config(self):
+        """
+        Serializes the optimizer configurations of the models.
+
+        Returns:
+            dict: A dictionary containing the serialized optimizer configurations of the models.
+        """
+        return {
+            "model_optimizers": [tf.keras.saving.serialize_keras_object(model.optimizer) for model in self.model_list]
+        }
+    
+    def compile_from_config(self, config):
+        """
+        Compiles the models with the deserialized optimizer configurations.
+
+        Args:
+            config (dict): A dictionary containing the serialized optimizer configurations.
+        """
+        optimizer_list = [tf.keras.saving.deserialize_keras_object(optimizer_config) for optimizer_config in config["model_optimizers"]]
+        self.compile(optimizer_list)
+
+    def build_from_config(self, config):
+        """ build is overwritten here as it is not needed. Individual measurement models
+        are built seperately, this happens when tf.keras.saving.deserialize_keras_object is called
+        on models in model_list"""
+
+        return
+        #self.build(config["input_shape"])
+    
+
+
+
+
+
+
+
+
