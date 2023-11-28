@@ -13,6 +13,7 @@ import tensorflow as tf
 import numpy as np
 from FactorLayer import FactorLayer
 from ZCALayer import ZCALayer
+from ConfoundLayer import ConfoundLayer
 
 # from Custom_Losses_and_Metrics import mse_loss
 # from Custom_Losses_and_Metrics import corr_metric
@@ -87,7 +88,7 @@ class StructuralModel(tf.keras.Model):
 
         if not run_from_config:
         # Add factor layer to each model in the list
-            self.model_list = [self.add_factor_layer(model, regularizer) for model, regularizer in zip(model_list, regularizer_list)]
+            self.model_list = [self.add_DLVPM_layer(model, regularizer) for model, regularizer in zip(model_list, regularizer_list)]
         else:
             self.model_list = model_list
     
