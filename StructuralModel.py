@@ -63,7 +63,9 @@ class StructuralModel(tf.keras.Model):
         Initializes the StructuralModel instance.
 
         Args:
-            C_mv (np.array): A binary adjacency matrix defining connections between data-views.
+            C_mv (tf.Tensor or np.array): A binary adjacency matrix defining connections between data-views.
+            regularizer_list (list): A list of regularizers that are applied to projection layers for models
+            in each data-view.
             model_list (list): A list of Keras models for each data-view.
             tot_num (int): Total number of features across all batches.
             ndims (int): Number of orthogonal latent variables to construct.
@@ -375,7 +377,7 @@ class StructuralModel(tf.keras.Model):
             An instance of the class.
         """
         # Deserialize Keras/TensorFlow objects
-        config['C_mv'] = np.array(config['C_mv'])
+        config['C_mv'] = tf.constant(config['C_mv'])
         
         # Deserialize each model in the model list using a list comprehension
         config['model_list'] = [tf.keras.saving.deserialize_keras_object(model_config) for model_config in config['model_list']]

@@ -24,13 +24,10 @@ class FactorLayer(tf.keras.layers.Layer):
     
     This layer is constructed of three basic parts. The first set of operations
     involve carrying out batch normalisation on the inputs. In the second set of 
-    operations, we orthogonalise the second set of inputs with respect to the first.
+    operations, we orthogonalise inputs with respect to the first DLV.
     We then use a linear layer to project the output of the neural network into a 
     space where it correlates with the outputs of other data-views.
-    
-    The ordering of the layer calculations is: batch normalisation > orthogonalisation 
-    > linear projection. 
-    
+
     Similar to some other layers, such as the batch normalisation layer, this
     layer performs differently during training and testing.
     

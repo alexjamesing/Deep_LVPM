@@ -17,16 +17,17 @@ import tensorflow.keras.layers
 
 class ZCALayer(tf.keras.layers.Layer):
     
-    """This layer should be placed at the end of DPLS-PM models. The layer 
+    """This layer should be placed at the end of DLVPM models. The layer 
     generates orthogonal factors that are highly correlated between data-views. 
     
-    This layer is constructed of three basic parts. The first set of operations
-    involve carrying out batch normalisation on the inputs. In the second set of 
-    operations, we orthogonalise the second set of inputs with respect to the first.
-    We then use a linear layer to project the output of the neural network into a 
-    space where it correlates with the outputs of other data-views.
+    This layer is constructed of two basic parts. The first set of operations
+    involve carrying out batch normalisation on the inputs. We then use a linear layer to 
+    project the output of the neural network into a space where it correlates 
+    with the outputs of other data-views. In contrast to the FactorLayer, orthogonalisation
+    is carried out outside of this layer, as part of the StructuralModel class. 
+    This is much more convinient in this case.
     
-    The ordering of the layer calculations is: batch normalisation > orthogonalisation 
+    The ordering of the layer calculations is: batch normalisation > 
     > linear projection. 
     
     Similar to some other layers, such as the batch normalisation layer, this
