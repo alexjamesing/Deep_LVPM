@@ -35,7 +35,7 @@ class StructuralModel(tf.keras.Model):
     where ones represent connections, and zeros represent un-connected data-views.
 
     Attributes:
-        C_mv: A binary adjacency matrix defining the connections between data-views.
+        Path: A binary adjacency matrix defining the connections between data-views.
         model_list: A list of Keras models for each data-view.
         tot_num: Total number of features across all batches.
         ndims: Number of orthogonal latent variables to construct.
@@ -57,13 +57,13 @@ class StructuralModel(tf.keras.Model):
     """
 
     
-    def __init__(self, C_mv, model_list, regularizer_list, tot_num, ndims, epochs, batch_size, orthogonalization='Moore-Penrose',run_from_config=False, **kwargs):
+    def __init__(self, Path, model_list, regularizer_list, tot_num, ndims, epochs, batch_size, orthogonalization='Moore-Penrose',run_from_config=False, **kwargs):
         
         """
         Initializes the StructuralModel instance.
 
         Args:
-            C_mv (tf.Tensor or np.array): A binary adjacency matrix defining connections between data-views.
+            Path (tf.Tensor or np.array): A binary adjacency matrix defining connections between data-views.
             regularizer_list (list): A list of regularizers that are applied to projection layers for models
             in each data-view.
             model_list (list): A list of Keras models for each data-view.
@@ -76,7 +76,7 @@ class StructuralModel(tf.keras.Model):
 
         super().__init__(**kwargs)    
         
-        self.C_mv = C_mv
+        self.Path = Path
         self.model_list = model_list
         self.epochs = epochs
         self.tot_num = tot_num
@@ -307,7 +307,7 @@ class StructuralModel(tf.keras.Model):
         data-view is connected via the global PLS model.
         """
         
-        y_true =  tf.squeeze(tf.gather(y_true,tf.where(self.C_mv[vie,:]),axis=2),axis=3) ## select the latent factors connected to the latent factor for view vie
+        y_true =  tf.squeeze(tf.gather(y_true,tf.where(self.Path[vie,:]),axis=2),axis=3) ## select the latent factors connected to the latent factor for view vie
         
         y_pred = tf.expand_dims(y_pred,axis=2) ## expand dimensions of the predicted latent factor so broadcasting is possible
         
@@ -321,7 +321,7 @@ class StructuralModel(tf.keras.Model):
         
         """
       
-        y_true =  tf.squeeze(tf.gather(y_true,tf.where(self.C_mv[vie,:]),axis=2),axis=3) ## select the latent factors connected to the latent factor for view vie
+        y_true =  tf.squeeze(tf.gather(y_true,tf.where(self.Path[vie,:]),axis=2),axis=3) ## select the latent factors connected to the latent factor for view vie
         
         ## Minus the mean
         y_true_mean = tf.subtract(y_true,tf.math.reduce_mean(y_true,axis=0))
@@ -337,6 +337,50 @@ class StructuralModel(tf.keras.Model):
 
         return tf.math.reduce_mean(corr2)
     
+    import tensorflow as tf
+
+    def calculate_corrmat(self, DLVs):
+        """
+        Compute Pearson correlation coefficient matrices for a 3D tensor.
+
+        This function takes a 3D tensor of shape (n_samples, dimensions, DLVs) and computes
+        the Pearson correlation coefficient between each pair of DLVs for each dimension. 
+        The output is a list of symmetric matrices, one for each dimension, of shape (DLVs, DLVs).
+
+        Args:
+        DLVs (tf.Tensor): A 3D tensor of shape (n_samples, dimensions, DLVs).
+
+        Returns:
+        List[tf.Tensor]: A list of 2D tensors, each of shape (DLVs, DLVs), containing 
+                        the Pearson correlation coefficients for each dimension.
+        """
+        # Ensure the input is a 3D tensor
+        if len(DLVs.shape) != 3:
+            raise ValueError("Input must be a 3D tensor")
+
+        # List to store correlation matrices for each dimension
+        correlation_matrices = []
+
+        # Iterate through each dimension
+        for dim in range(DLVs.shape[1]):
+            # Select the data for the current dimension
+            dim_DLVs = DLVs[:, dim, :]
+
+            # Centering the DLVs by subtracting the mean
+            mean_centered = dim_DLVs - tf.reduce_mean(dim_DLVs, axis=0)
+
+            # Compute the standard deviation for each feature
+            std_dev = tf.math.reduce_std(dim_DLVs, axis=0)
+
+            # Normalize each feature
+            normalized_DLVs = mean_centered / std_dev
+
+            # Compute the correlation matrix for the current dimension
+            correlation_matrix = tf.linalg.matmul(normalized_DLVs, normalized_DLVs, transpose_a=True) / tf.cast(tf.shape(dim_DLVs)[0], tf.float32)
+            correlation_matrices.append(correlation_matrix)
+
+        return correlation_matrices
+        
 
     def get_config(self):
 
@@ -353,7 +397,7 @@ class StructuralModel(tf.keras.Model):
         regularized_model_list = [tf.keras.utils.serialize_keras_object(regularizer) for regularizer in self.regularizer_list]
         
         config = {
-            "C_mv": self.C_mv.tolist(),
+            "Path": self.Path.tolist(),
             "model_list": serialized_model_list,  # Include serialized model list in the configuration
             "regularizer_list": regularized_model_list,
             "tot_num": self.tot_num,
@@ -377,7 +421,7 @@ class StructuralModel(tf.keras.Model):
             An instance of the class.
         """
         # Deserialize Keras/TensorFlow objects
-        config['C_mv'] = tf.constant(config['C_mv'])
+        config['Path'] = tf.constant(config['Path'])
         
         # Deserialize each model in the model list using a list comprehension
         config['model_list'] = [tf.keras.saving.deserialize_keras_object(model_config) for model_config in config['model_list']]

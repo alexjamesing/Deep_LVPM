@@ -16,79 +16,114 @@ pip Deep_LVPM
 
 Deep Latent Variable Path Modelling (DLVPM) is a method for path/structural equation modelling utilising deep neural networks. The aim of the method is to connect different data types together via sets of orthogonal latent variables. 
 
-The implementation of this method is built around a custom keras/tensorflow model called StructuralModel, which utilises several custom keras/tensorflow layers for constructing Deep Latent Variables (DLVs) from input data.
-
 The user must specify a path model defining which data types should be linked by the DLVPM model, along with a neural network model for each data-view, which is then used to optimise associations/linkages between DLVs derived from each data-type.
 
+The implementation of this method is built around a custom keras/tensorflow model called 'StructuralModel', which utilises several custom keras/tensorflow layers for constructing Deep Latent Variables (DLVs) from input data. DLVPM uses standard keras/tensorflow functions such as model.fit() and model.evaluate() to train  and test DLVPM models. Users who are unfamiliar with keras/tensorflow can find documentation on these projects here: https://www.tensorflow.org/guide/keras
 
-For example, starting with three randomly generated arrays:
+**Example Application**
+
+In the tutorial below, we give a very simple example of how DLVPM can be used. This tutorial uses the MNIST dataset (the hello world! of machine learning!!), designed to give the user an idea of how a DLVPM StructuralModel can be instantiated, then trained, tested and saved. 
+
+In this example, the DLVPM method constructs deep latent variables (DLVs) that are highly correlated between image and categorical data.
+
+First, we need to download the MNIST dataset, and prepare it for use with the DLVPM model:
 
 ~~~
 
 # import all necessary packages required for this tutorial
 import tensorflow as tf
 import numpy as np
-import Deep_LVPM as dlvpm
+from StructuralModel import StructuralModel
+from tensorflow import keras
+from keras import layers
 
-# Generate random arrays using numpy
-Data_A = np.random.rand(1000,100)
-Data_B = np.random.rand(1000,500)
-Data_C = np.random.rand(1000,50)
+# Model / data parameters
+num_classes = 10
+input_shape = (28, 28, 1)
+
+# Load the data and split it between train and test sets
+(x_train, y_train_cat), (x_test, y_test_cat) = keras.datasets.mnist.load_data()
+
+# Scale images to the [0, 1] range
+x_train = x_train.astype("float32") / 255
+x_test = x_test.astype("float32") / 255
+# Make sure images have shape (28, 28, 1)
+x_train = np.expand_dims(x_train, -1)
+x_test = np.expand_dims(x_test, -1)
+
+print("x_train shape:", x_train.shape)
+print(x_train.shape[0], "train samples")
+print(x_test.shape[0], "test samples")
+
+# convert class vectors to binary class matrices
+y_train = keras.utils.to_categorical(y_train_cat, num_classes)
+y_test = keras.utils.to_categorical(y_test_cat, num_classes)
+
 ~~~
 
-We then define tensorflow models to use:
+We then enter the training and testing data into lists, for later use in training and testing the DLVPM model:
 
 ~~~
 
-# We define new models using keras/tensorflow, modelA_input and modelB_input are defined using the sequential API. modelC is defined using the functional API
+data_train_list = [x_train, y_train]
+data_test_list = [x_test, y_test]
 
-modelA_input = tf.keras.sequential()
-modelA_input.add(tf.keras.layers.Dense(50, input_shape=(Data_A.shape[1],)))
-modelA_input.add(tf.keras.layers.Dense(50))
-
-modelB_input = tf.keras.sequential()
-modelB_input.add(tf.keras.layers.Dense(100, input_shape=(Data_B.shape[1],)))
-modelB_input.add(tf.keras.layers.Dense(100))
-
-modelC_input = tf.keras.sequential()
 ~~~
 
-Models can be defined using any of the keras APIs i.e. functional, sequential, or using model subclassing.
+We then need to define keras/tensorflow models to be used to process data from the different data-views. Here, we use a convolutional neural network to process the image data. For the label data, we only define the input shape, as further processing of categorical labels is not required here. Models can be defined using any of the keras APIs i.e. functional, sequential, or using model subclassing.
 
-These models are then used as inputs to the DLVPM model. Both models and data are entered into the DLVPM model as lists:
+~~~
+
+MNIST_image_model = keras.Sequential(
+    [
+        keras.Input(shape=input_shape),
+        layers.Conv2D(32, kernel_size=(3, 3), activation="relu", kernel_regularizer=keras.regularizers.l1_l2(l1=1e-5, l2=1e-5)),
+        layers.MaxPooling2D(pool_size=(2, 2)),
+        layers.Conv2D(64, kernel_size=(3, 3), activation="relu", kernel_regularizer=keras.regularizers.l1_l2(l1=1e-5, l2=1e-5)),
+        layers.MaxPooling2D(pool_size=(2, 2)),
+        layers.Flatten(),
+        layers.Dense(100, activation='relu'),
+        layers.Dropout(0.5)
+
+    ]
+)
+
+data_input = keras.Input(shape = 10)
+MNIST_label_model=keras.Model(inputs=data_input,outputs=data_input)
+  
+~~~
+
+We then define parameters for specifying the StructuralModel, which is the core class of DLVPM. The two models we defined above should be entered as lists. In DLVPM parlance, these models are referred to as 'measurement models'. model_list should be of the same length as the number of data-types we wish to connect.
 
 ~~~
 
 # Define a model list, which will then be used as an input to the DLVPM model
-model_list = [modelA, modelB, modelC]
-
-# Define a list containing the data types to be connected:
-Data_list = [Data_A, Data_B, Data_C]
+model_list = [MNIST_image_model, MNIST_label_model] 
 
 ~~~
 
-We must also define a path model, in the form of an adjacency matrix, which defines the data views that are connected to one another. 
+We must also define a path model, in the form of an adjacency matrix that defines the data views that are connected to one another. In this case, the path model is trivial, we are only connecting two data-types, so it is written as:
 
 ~~~
 
 # Here, we define a new adjacency matrix, which defines which data views to connect
-C = tf.constant([0,1,1],
-            [1,0,1],
-            [1,1,0])
-~~~
-
-The model list and adjacency matrix are used as inputs to the structural model. The structural model also takes a number of other inputs (see section on StructuralModel for more information):
-
-The StructuralModel creates DLV projection weights internally. It will often be useful to add some weight regularization to these projection layers. This can be done using a list of keras/tensorflow regularizers, where each element of the list corresponds to a different measurement model:
+Path = tf.constant([[0,1],
+            [1,0]])
 
 ~~~
 
-regularizer_list = []
+The model list and path model are used as inputs to the structural model. The structural model also takes a number of other inputs (see section on StructuralModel for more information).
 
-ndims = 5 # the number of DLVs we wish to extract
-tot_num = Data_A.shape[0] # the total number of samples, which is used for internal normalisation
+~~~
 
-DLVPM_Model = dlvpm.StructuralModel(C_mv, model_list, regularizer_list, tot_num, ndims, epochs, batch_size)
+regularizer_list = [None, None] ## regularizer_list, this is a weight regularizer for the weights in the last layer of the DLVPM model
+
+ndims = 9 # the number of DLVs we wish to extract
+tot_num = x_train.shape[0] # the total number of samples, which is used for internal normalisation
+batch_size = 32
+epochs = 20
+
+DLVPM_model = StructuralModel(Path, model_list, regularizer_list, tot_num, ndims, epochs, batch_size)
 
 ~~~
 
@@ -98,7 +133,7 @@ It is then necessary to compile the model before training. Here, we must define 
 
 optimizer_list = [tf.keras.optimizers.Adam(learning_rate=1e-5),tf.keras.optimizers.Adam(learning_rate=1e-5),tf.keras.optimizers.Adam(learning_rate=1e-5)]
 
-DLVPM_Model.compile(optimizer=optimizer_list)
+DLVPM_model.compile(optimizer=optimizer_list)
 
 ~~~
 
@@ -106,7 +141,7 @@ We then run model training using the fit function:
 
 ~~~
 
-DLVPM_Model.fit(Data_list, batch_size=batch_size, epochs=epochs,verbose=True)
+DLVPM_model.fit(Data_list, batch_size=batch_size, epochs=epochs,verbose=True)
 
 ~~~
 
@@ -114,7 +149,7 @@ We can then evaluate the model:
 
 ~~~
 
-metrics = DLVPM_Model.evaluate(Data_list)
+metrics = DLVPM_model.evaluate(Data_list)
 
 ~~~
 
@@ -124,7 +159,7 @@ We can use the predict function to obtain the deep latent variables for differen
 
 ~~~
 
-DLVs = DLVPM_Model.predict(Data_list)
+DLVs = DLVPM_model.predict(Data_list)
 
 ~~~
 
@@ -167,10 +202,9 @@ In the text below, we give an explanation of each of the custom model and layer 
 
 This model also depends on the custom layers `FactorLayer` and `ZCALayer`, these layers are called internally using this method. The layer that is used is determined by whether the user selects 'Moore-Penrose' or 'zca' for the orthogonalisztion parameter.
 
-
 # Attributes
 
-- **C_mv**: Binary adjacency matrix defining connections between data views.
+- **Path**: Binary adjacency matrix defining connections between data views.
 - **model_list**: List of Keras models, one for each data view.
 - **regularizer_list**: List of regularizers applied to projection layers in each data-view model.
 - **tot_num**: Total number of features across all data batches.
@@ -179,19 +213,87 @@ This model also depends on the custom layers `FactorLayer` and `ZCALayer`, these
 - **batch_size**: Batch size used during training.
 - **orthogonalization**: Specifies the orthogonalization method ('Moore-Penrose' or 'ZCA').
 
+# Callable Methods
+
+StructuralModel inherits from tf.keras.Model. This means that the core functions used for model compilation (model.compile()), training (model.fit()) and testing (model.evaluate() and model.predict()) are the same. However, in some cases, these functions behave slightly differently. For example, model.compile() requires a list of optimizers as input arguments rather than the single optimizer that is standard when defining a keras/tensorflow model. More information about these functions, and the arguments they can take, can be found in the official tensorflow/keras documentation.
+
+- **compile(optimizer_list)**: Configures the model for training with specified optimizers. This function requires a list of optimizers, one for each data-type/measurement model. As is usually the case, compile should be called when an instance of 'StrucutralModel' has been instantiated.
+
+Example usage:
+
+~~~
+
+optimizer_list = [tf.keras.optimizers.Adam(learning_rate=1e-4),tf.keras.optimizers.Adam(learning_rate=1e-3),tf.keras.optimizers.Adam(learning_rate=1e-4)] ## Here, we have three optimizers, one for each measurement model 
+
+struct_model.compile(optimizer_list)
+
+~~~
+
+- **fit**: In keras/tensorflow, the .fit method is used to train the model on the training data. In the present investigation, the model takes a data-list as input. The model can also take a data-generator that outputs a list. More information regarding additional arguments that can be taken by model.fit() can be found in the keras/tensorflow documentation.
+
+Example usage:
+
+~~~
+
+X = [data1, data2, data3] ## data is entered as a list
+
+struct_model.fit(X) ## fit the model
+
+~~~
+
+- **evaluate**: In keras/tensorflow, the .evaluate() function is used to evaluate model losses and metrics on some input data.
+
+Example usage:
+
+~~~
+
+[losses, metrics] = struct_model.evaluate(X)
+
+~~~
+
+- **predict**: In keras/tensorflow, the .predict() function produces outputs for a particular model. In the case of DLVPM, .predict will produce DLVs from all measurement models. The tensor produced here will be of shape n x ndims x nviews where n is the total number of samples, ndim is the number of DLVs extracted and nviews is the number of data-types included in the analysis.
+
+Example usage:
+
+~~~
+
+X = [data1, data2, data3] ## data is entered as a list
+
+DLVs = struct_model.fit(X) ## fit the model
+
+~~~
+
+It is worth noting that we can also obtain DLVs from individual measurement models by calling predict on them, calling them from their list index in model_list. For example, if we would like to obtain results for the third data-type entered into the structural model, we could obtain DLVs from this model using:
+
+~~~
+
+DLVs_data_3 = struct_model.model_list[3].predict(X[3]) # This command returns DLVs from the third measurement model.
+
+~~~
+
+- **calculate_corrmat**: calculate_corrmat is a custom DLVPM function that is designed to calculate associations between DLVs that have been output by model.predict(). This function will output a list of correlation matrices of length equal to ndims, with one association matrix for each DLV. 
+
+
+
+
+
+
+
+
 # Tracking Metrics
 
 - **loss_tracker_total**: Tracks total loss during training.
 - **corr_tracker**: Tracks correlation metrics during training.
 - **loss_tracker_mse**: Tracks mean squared error loss during training.
 
-# Methods
+# Internal Methods
+
+These internal methods will generally not be called directly by the user. Rather, they are called by other methods. E.g. train_step will be called for each batch during model.fit.
 
 - **__init__(...)**: Initializes the `StructuralModel` instance.
 - **add_DLVPM_layer(...)**: Adds a `FactorLayer` or `ZCALayer` to a given model.
 - **call(inputs)**: Runs data through each sub-model for the data views.
 - **train_step(inputs)**: Performs a training step, updating model weights.
-- **compile(optimizer)**: Configures the model for training with specified optimizers.
 - **test_step(inputs)**: Evaluates the model on test data.
 - **mse_loss(...)**: Calculates mean squared error loss.
 - **corr_metric(...)**: Calculates the correlation metric.
@@ -215,7 +317,7 @@ from custom_models import StructuralModel
 
 # Example usage of StructuralModel
 model = StructuralModel(
-    C_mv=adjacency_matrix,
+    Path=adjacency_matrix,
     model_list=[model1, model2, ...],
     regularizer_list=[regularizer1, regularizer2, ...],
     tot_num=total_features,
