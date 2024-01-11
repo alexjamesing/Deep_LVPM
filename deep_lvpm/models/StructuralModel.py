@@ -11,9 +11,10 @@ adjacency matrix.
 import os
 import tensorflow as tf
 import numpy as np
-from FactorLayer import FactorLayer
-from ZCALayer import ZCALayer
-from ConfoundLayer import ConfoundLayer
+import deep_lvpm as DLVPM
+from deep_lvpm.layers.FactorLayer import FactorLayer
+from deep_lvpm.layers.ZCALayer import ZCALayer
+import pydot
 
 # from Custom_Losses_and_Metrics import mse_loss
 # from Custom_Losses_and_Metrics import corr_metric
@@ -380,7 +381,39 @@ class StructuralModel(tf.keras.Model):
             correlation_matrices.append(correlation_matrix)
 
         return correlation_matrices
-        
+    
+
+    def plot_structural_model(self, outputname):
+        """
+        This function plots the structural/path. model. Visualisation is quite simple. 
+        Aesthetics are similar to those used in tf.keras.utils.plot_model()
+        outputname: This is the name of the output where we save the results. 
+
+        """
+        # Create a PyDot graph
+        graph = pydot.Dot(graph_type='digraph', rankdir='TB')
+
+        model_layer_list= [len(model.layers) for model in self.model_list]
+
+        # Create nodes with labels
+        for i in range(len(self.model_list)):
+
+            label = "Measurement Model " + str(i) + "," + " " + str(model_layer_list[i]) + " layers"
+            node = pydot.Node(str(i), label=label, shape="record") # create nodes to add to the pydot object
+            graph.add_node(node) # add nodes to the pydot graph object
+
+        adj_matrix = self.Path # this is the path. model we wish to plot
+
+        # Create edges
+        for i, row in enumerate(adj_matrix):
+            for j, val in enumerate(row):
+                if val == 1:
+                    edge = pydot.Edge(str(i), str(j))
+                    graph.add_edge(edge)
+
+        graph.write_png(outputname)
+
+            
 
     def get_config(self):
 
