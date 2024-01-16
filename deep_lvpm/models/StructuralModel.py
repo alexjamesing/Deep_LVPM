@@ -11,9 +11,10 @@ adjacency matrix.
 import os
 import tensorflow as tf
 import numpy as np
-import deep_lvpm as DLVPM
+# import deep_lvpm 
 from deep_lvpm.layers.FactorLayer import FactorLayer
 from deep_lvpm.layers.ZCALayer import ZCALayer
+# from deep_lvpm.layers.ConfoundLayer import ConfoundLayer
 import pydot
 
 # from Custom_Losses_and_Metrics import mse_loss
@@ -24,7 +25,7 @@ loss_tracker_total = tf.keras.metrics.Mean(name="total_loss")
 loss_tracker_mse = tf.keras.metrics.Mean(name="mean_squared_loss")
 corr_tracker = tf.keras.metrics.Mean(name="corr_metric")
 
-@tf.keras.saving.register_keras_serializable("StructuralModel")
+@tf.keras.saving.register_keras_serializable(package="deep_lvpm",name="StructuralModel")
 class StructuralModel(tf.keras.Model):
     
     """

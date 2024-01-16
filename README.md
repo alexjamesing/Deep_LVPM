@@ -18,7 +18,7 @@ Deep Latent Variable Path Modelling (DLVPM) is a method for path/structural equa
 
 The user must specify a path model defining which data types should be linked by the DLVPM model, along with a neural network model for each data-view, which is then used to optimise associations/linkages between DLVs derived from each data-type.
 
-The implementation of this method is built around a custom keras/tensorflow model called 'StructuralModel', which utilises several custom keras/tensorflow layers for constructing Deep Latent Variables (DLVs) from input data. DLVPM uses standard keras/tensorflow functions such as model.fit() and model.evaluate() to train  and test DLVPM models. Users who are unfamiliar with keras/tensorflow can find documentation on these projects here: https://www.tensorflow.org/guide/keras
+The implementation of this method is built around a custom keras/tensorflow model called 'StructuralModel', which utilises several custom keras/tensorflow layers for constructing Deep Latent Variables (DLVs) from input data. Using the high-level keras API, we can define new DLVPM models in just a few lines of code. Once a Deep LVPM model is defined, standard keras/tensorflow functions such as model.fit() and model.evaluate() to train  and test DLVPM models. Users who are unfamiliar with keras/tensorflow can find documentation on these projects here: https://www.tensorflow.org/guide/keras
 
 **Example Application**
 
@@ -272,12 +272,6 @@ DLVs_data_3 = struct_model.model_list[3].predict(X[3]) # This command returns DL
 ~~~
 
 - **calculate_corrmat**: calculate_corrmat is a custom DLVPM function that is designed to calculate associations between DLVs that have been output by model.predict(). This function will output a list of correlation matrices of length equal to ndims, with one association matrix for each DLV. 
-
-
-
-
-
-
 
 
 # Tracking Metrics

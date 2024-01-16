@@ -1,11 +1,14 @@
 # import all necessary packages required for this tutorial
 import tensorflow as tf
 import numpy as np
-from StructuralModel import StructuralModel
+import deep_lvpm
 from tensorflow import keras
 from keras import layers
+import numpy as np
+from sklearn.manifold import TSNE
+import matplotlib.pyplot as plt
 
-# Generate random arrays using numpy
+from deep_lvpm.models.StructuralModel import StructuralModel ## Here, we import the main StructuralModel class used in deep-lvpm
 
 # Model / data parameters
 num_classes = 10
@@ -74,18 +77,32 @@ metrics = DLVPM_Model.evaluate(data_test_list)
 
 DLVs = DLVPM_Model.predict(data_test_list)
 
-Cmat1 = np.corrcoef(DLVs[:,0,:].T)
-Cmat2 = np.corrcoef(DLVs[:,:,0].T)
-
-print(np.min(Cmat2-np.eye(Cmat2.shape[0])))
-
 #DLVPM_Model.save('output_folder/DLVPM_Model.keras')
 
-# import sklearn as sk
-# from sklearn import svm
-# from sklearn.multioutput import MultiOutputClassifier
+image_DLVs = DLVPM_Model.model_list[0].predict(data_test_list[0])
 
-## Here, we can run things, such as models trained on sklearn, for prediction of
-## binary outputs
+## Here, we randomy select 100 examples for plotting
+random_indices = np.random.choice(image_DLVs.shape[0], size=1000, replace=False)
+
+image_DLVs_plot = image_DLVs[random_indices,:]
+y_test_plot = y_test[random_indices,:]
+
+# Apply t-SNE
+tsne = TSNE(n_components=2, random_state=42)
+tsne_results = tsne.fit_transform(image_DLVs_plot)
+
+# Plot
+plt.figure(figsize=(12, 8))
+
+for i in range(y_test_plot.shape[1]):
+    points = tsne_results[y_test_plot[:, i] == 1]
+    plt.scatter(points[:, 0], points[:, 1], label=f'Category {i+1}')
+
+plt.title('t-SNE projection of the dataset')
+plt.legend()
+plt.savefig('/Users/ing/Downloads/figure_out.png')
+plt.show()
+
+
 
 

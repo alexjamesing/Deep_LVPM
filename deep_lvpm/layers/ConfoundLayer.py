@@ -16,7 +16,7 @@ import scipy.io as sio
 import tensorflow.keras as keras
 
 
-@keras.saving.register_keras_serializable()
+@keras.saving.register_keras_serializable(package="deep_lvpm",name="ConfoundLayer")
 class ConfoundLayer(tf.keras.layers.Layer):
     
     """ The purpose of this layer is to orthogonalise data-inputs with respect

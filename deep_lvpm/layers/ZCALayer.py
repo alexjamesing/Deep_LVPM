@@ -15,6 +15,7 @@ import tensorflow.keras.layers
 
 # changes to git
 
+@tf.keras.saving.register_keras_serializable(package="deep_lvpm",name="ZCALayer")
 class ZCALayer(tf.keras.layers.Layer):
     
     """This layer should be placed at the end of DLVPM models. The layer 

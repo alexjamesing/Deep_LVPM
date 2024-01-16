@@ -10,6 +10,7 @@ setuptools.setup(
     description="A package for carrying out deep latent variable path modeĺling",
     packages=setuptools.find_packages(),
     install_requires=[
-        'tensorflow'
+        'tensorflow',
+        'pydot'
     ]
 )
