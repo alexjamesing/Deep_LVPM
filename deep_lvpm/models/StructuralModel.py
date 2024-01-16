@@ -167,7 +167,7 @@ class StructuralModel(tf.keras.Model):
         # pass. We do this so that we can re-normalise the weights. 
         
         #y = self(inputs, training=True)  ## forward pass
-        y = self(inputs, training=False)  ## forward pass
+        y = self(inputs, training=True)  ## forward pass
     
         scale_fact = tf.cast(self.tot_num/tf.shape(y)[0],dtype=float) #
         
@@ -431,7 +431,7 @@ class StructuralModel(tf.keras.Model):
         regularized_model_list = [tf.keras.utils.serialize_keras_object(regularizer) for regularizer in self.regularizer_list]
         
         config = {
-            "Path": self.Path.tolist(),
+            "Path": np.asarray(self.Path).tolist(),
             "model_list": serialized_model_list,  # Include serialized model list in the configuration
             "regularizer_list": regularized_model_list,
             "tot_num": self.tot_num,
