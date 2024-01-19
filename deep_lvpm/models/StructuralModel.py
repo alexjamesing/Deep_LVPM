@@ -14,7 +14,7 @@ import numpy as np
 # import deep_lvpm 
 from deep_lvpm.layers.FactorLayer import FactorLayer
 from deep_lvpm.layers.ZCALayer import ZCALayer
-# from deep_lvpm.layers.ConfoundLayer import ConfoundLayer
+from deep_lvpm.layers.ConfoundLayer import ConfoundLayer
 import pydot
 
 # from Custom_Losses_and_Metrics import mse_loss
@@ -74,6 +74,8 @@ class StructuralModel(tf.keras.Model):
             epochs (int): Number of training epochs.
             batch_size (int): Size of the batches used during training.
             orthogonalization (str, optional): Orthogonalisation procedure. Defaults to 'Moore-Penrose'.
+            momentum (Float, optional): The momentum defines how quickly global parameters such as means and correlation matrices are updated
+            epsilon (Float, optional): "epsilon" (often denoted as ε) is a small constant added for numerical stability in batch updates
         """
 
         super().__init__(**kwargs)    
@@ -84,6 +86,8 @@ class StructuralModel(tf.keras.Model):
         self.tot_num = tot_num
         self.ndims = ndims
         self.batch_size = batch_size
+        self.momentum = momentum
+        self.epsilon = epsilon
         self.orthogonalization=orthogonalization
         self.loss_tracker_total = tf.keras.metrics.Mean(name="total_loss")
         self.corr_tracker = tf.keras.metrics.Mean(name="cross_metric")
@@ -109,20 +113,20 @@ class StructuralModel(tf.keras.Model):
         if isinstance(model, tf.keras.Sequential):
             # For sequential models, we can just add a new layer on top
             if self.orthogonalization == 'Moore-Penrose':
-                model.add(FactorLayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims))
+                model.add(FactorLayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum,epsilon=self.epsilon))
             if self.orthogonalization == 'zca':
-                model.add(ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims))
+                model.add(ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum,epsilon=self.epsilon))
             else:
                 print('Orthogonalization mode not recognised, must be "Moore-Penrose" or "zca"')
         elif isinstance(model, tf.keras.Model):
             # For functional models, we need to create a new model with the added layer
             if self.orthogonalization == 'Moore-Penrose':
                 input = model.input
-                x = FactorLayer(kernel_regularizer=regularizer,tot_num=self.tot_num, ndims=self.ndims)(model.output)
+                x = FactorLayer(kernel_regularizer=regularizer,tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum,epsilon=self.epsilon)(model.output)
                 model = tf.keras.Model(inputs=input, outputs=x)
             if self.orthogonalization == 'zca':
                 input = model.input
-                x = ZCALayer(kernel_regularizer=regularizer,tot_num=self.tot_num, ndims=self.ndims)(model.output)
+                x = ZCALayer(kernel_regularizer=regularizer,tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum,epsilon=self.epsilon)(model.output)
                 model = tf.keras.Model(inputs=input, outputs=x)
         else:
             raise ValueError("The input model must be either a tf.keras.Sequential or a tf.keras.Model instance.")
@@ -180,7 +184,7 @@ class StructuralModel(tf.keras.Model):
                 diag_offset = self.model_list[i].layers[-1].diag_offset
                 sqrt_inv_y = tf.linalg.sqrtm(tf.linalg.inv(moving_conv2+diag_offset*tf.eye(moving_conv2.shape[0])))
                 ylist[i]=tf.matmul(tf.squeeze(y[:,:,i]),sqrt_inv_y)
-            y=tf.stack(ylist,axis=2)
+            y = tf.stack(ylist,axis=2)
         elif self.orthogonalization=='Moore-Penrose':
             y = tf.divide(y,tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(y),axis=0))))  ## re-normlise latent factors, very important!
      
