@@ -59,7 +59,7 @@ class StructuralModel(tf.keras.Model):
     """
 
     
-    def __init__(self, Path, model_list, regularizer_list, tot_num, ndims, epochs, batch_size, orthogonalization='Moore-Penrose',run_from_config=False, **kwargs):
+    def __init__(self, Path, model_list, regularizer_list, tot_num, ndims, epochs, batch_size, orthogonalization='Moore-Penrose', momentum=0.95, epsilon=1e-6, run_from_config=False, **kwargs):
         
         """
         Initializes the StructuralModel instance.
