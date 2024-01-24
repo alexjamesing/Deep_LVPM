@@ -48,7 +48,7 @@ class FactorLayer(tf.keras.layers.Layer):
     """
     
     
-    def __init__(self, kernel_regularizer=None, epsilon=1e-6, momentum=0.95, tot_num=None, ndims=None, run=0, **kwargs):
+    def __init__(self, kernel_regularizer=None, epsilon=1e-3, momentum=0.99, tot_num=None, ndims=None, run=0, **kwargs):
         
         
         """
@@ -144,7 +144,6 @@ class FactorLayer(tf.keras.layers.Layer):
             DLV_all = self.calculate_batch_DLV_static(X)
             out = self.calculate_batch_DLV_train(X, DLV_all) 
             
-
             self.update_moving_variables([X, DLV_all])
 
             #print(np.corrcoef(tf.transpose(out).numpy()))
@@ -164,7 +163,7 @@ class FactorLayer(tf.keras.layers.Layer):
     def moving_variables_initial_values(self, X):
        
         """ This function is called the first time the layer is called with data, i.e. when 
-        self.i=0. Here, the layer takes the first batch of data, and uses it to calculate
+        self.run=0. Here, the layer takes the first batch of data, and uses it to calculate
         the moving variables used by DLVPM.
 
         """

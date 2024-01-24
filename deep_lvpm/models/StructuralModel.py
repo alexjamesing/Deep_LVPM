@@ -59,7 +59,7 @@ class StructuralModel(tf.keras.Model):
     """
 
     
-    def __init__(self, Path, model_list, regularizer_list, tot_num, ndims, epochs, batch_size, orthogonalization='Moore-Penrose', momentum=0.95, epsilon=1e-6, run_from_config=False, **kwargs):
+    def __init__(self, Path, model_list, regularizer_list, tot_num, ndims, epochs, batch_size, orthogonalization='Moore-Penrose', momentum=0.95, epsilon=1e-4, run_from_config=False, **kwargs):
         
         """
         Initializes the StructuralModel instance.
@@ -170,8 +170,9 @@ class StructuralModel(tf.keras.Model):
         # Here, we run the current data-iteration through the global model in a forward 
         # pass. We do this so that we can re-normalise the weights. 
         
-        #y = self(inputs, training=True)  ## forward pass
+        #
         y = self(inputs, training=True)  ## forward pass
+        #y = self(inputs, training=False)  ## forward pass
     
         scale_fact = tf.cast(self.tot_num/tf.shape(y)[0],dtype=float) #
         
@@ -182,7 +183,7 @@ class StructuralModel(tf.keras.Model):
             for i in range(y.shape[2]):
                 moving_conv2 = self.model_list[i].layers[-1].moving_conv2
                 diag_offset = self.model_list[i].layers[-1].diag_offset
-                sqrt_inv_y = tf.linalg.sqrtm(tf.linalg.inv(moving_conv2+diag_offset*tf.eye(moving_conv2.shape[0])))
+                sqrt_inv_y = tf.linalg.sqrtm(tf.linalg.inv(moving_conv2+diag_offset*tf.eye(moving_conv2.shape[0]))) ## orthogonalise and re-normalse
                 ylist[i]=tf.matmul(tf.squeeze(y[:,:,i]),sqrt_inv_y)
             y = tf.stack(ylist,axis=2)
         elif self.orthogonalization=='Moore-Penrose':
