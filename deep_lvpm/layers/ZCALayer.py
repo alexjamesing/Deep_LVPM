@@ -62,7 +62,7 @@ class ZCALayer(tf.keras.layers.Layer):
     """
     
     
-    def __init__(self, kernel_regularizer=tf.keras.regularizers.l1_l2(l1=0, l2=0), epsilon=1e-3, momentum=0.95, diag_offset=1e-3, tot_num=None, ndims=None, run=0):
+    def __init__(self, kernel_regularizer=tf.keras.regularizers.l1_l2(l1=0, l2=0), epsilon=1e-3, momentum=0.95, diag_offset=1e-3, tot_num=None, ndims=None, run=0, **kwargs):
         
         """
         Initialize the custom layer.
@@ -150,9 +150,25 @@ class ZCALayer(tf.keras.layers.Layer):
            
             self.update_moving_variables(X)
         
+            out = tf.matmul(X,self.project)
+
+            #out_stat = tf.matmul(X,self.project_static)
+
+            #sqrt_inv_out = tf.linalg.sqrtm(tf.linalg.inv(tf.matmul(tf.transpose(out_stat),out_stat)))
+
+            #sqrt_inv_out = tf.linalg.sqrtm(tf.linalg.inv(tf.matmul(tf.transpose(out),out)+self.diag_offset*tf.eye(self.moving_conv2.shape[0])))
+            #out = tf.matmul(out,sqrt_inv_out)
+
+
             #X = tf.divide(tf.subtract(inputs, (tf.transpose(self.moving_mean)+self.epsilon)),(tf.transpose(tf.math.sqrt(self.moving_var))+self.epsilon))
-            
-        out = tf.matmul(X,self.project)
+
+
+        else:
+
+            out = tf.matmul(X,self.project)
+
+            sqrt_inv_out = tf.linalg.sqrtm(tf.linalg.inv(tf.matmul(tf.transpose(out),out)+self.diag_offset*tf.eye(self.moving_conv2.shape[0])))
+            out = tf.matmul(out,sqrt_inv_out)
             
         return out
  
@@ -196,7 +212,7 @@ class ZCALayer(tf.keras.layers.Layer):
         #self.moving_mean.assign(self.momentum*self.moving_mean + (tf.constant(1,dtype=float)-self.momentum)*tf.expand_dims(tf.math.reduce_mean(inputs, axis=0),axis=1))
         #self.moving_var.assign(self.momentum*self.moving_var + (tf.constant(1,dtype=float)-self.momentum)*tf.expand_dims(tf.math.reduce_variance(inputs, axis=0),axis=1))
         
-        X=tf.divide(tf.subtract(X,tf.transpose(self.moving_mean)),tf.transpose(tf.math.sqrt(self.moving_var)))
+        #X=tf.divide(tf.subtract(X,tf.transpose(self.moving_mean)),tf.transpose(tf.math.sqrt(self.moving_var)))
         
         out_stat = tf.matmul(X, self.project)
         

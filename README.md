@@ -211,7 +211,9 @@ This model also depends on the custom layers `FactorLayer` and `ZCALayer`, these
 - **ndims**: Number of orthogonal latent variables to be constructed.
 - **epochs**: Number of training epochs.
 - **batch_size**: Batch size used during training.
-- **orthogonalization**: Specifies the orthogonalization method ('Moore-Penrose' or 'ZCA').
+- **orthogonalization (optional)**: Specifies the orthogonalization method ('Moore-Penrose' or 'ZCA'). Defaults to Moore-Penrose.
+- **momentum (optional)**: The momentum defines how quickly global parameters such as means and correlation matrices are updated. Defaults to 0.95
+- **epsilon (optional)**: epsilon is a small constant that is added for numeric stability during batch updates. Defaults to 1e-4.
 
 # Callable Methods
 

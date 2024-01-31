@@ -145,8 +145,8 @@ class StructuralModel(tf.keras.Model):
         """
         out=tf.stack([self.model_list[vie](inputs[vie]) for vie in range(len(self.model_list))],axis=2) 
         
-        scale_fact = tf.cast(self.tot_num/tf.shape(out)[0],dtype=float) #
-        out = tf.divide(out,tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(out),axis=0))))  ## re-normlise latent factors, very important!
+        # scale_fact = tf.cast(self.tot_num/tf.shape(out)[0],dtype=float) #
+        # out = tf.divide(out,tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(out),axis=0))))  ## re-normlise latent factors, very important!
         
         
         return out
@@ -170,25 +170,12 @@ class StructuralModel(tf.keras.Model):
         # Here, we run the current data-iteration through the global model in a forward 
         # pass. We do this so that we can re-normalise the weights. 
         
+        is_training = False
         #
-        y = self(inputs, training=True)  ## forward pass
-        #y = self(inputs, training=False)  ## forward pass
-    
-        scale_fact = tf.cast(self.tot_num/tf.shape(y)[0],dtype=float) #
-        
-        ## Here, we re-normalise targets. In the case of the zca approach, this normalisation also involves
-        # an orthogonalization step
-        if self.orthogonalization=='zca':
-            ylist = [None]*len(inputs)
-            for i in range(y.shape[2]):
-                moving_conv2 = self.model_list[i].layers[-1].moving_conv2
-                diag_offset = self.model_list[i].layers[-1].diag_offset
-                sqrt_inv_y = tf.linalg.sqrtm(tf.linalg.inv(moving_conv2+diag_offset*tf.eye(moving_conv2.shape[0]))) ## orthogonalise and re-normalse
-                ylist[i]=tf.matmul(tf.squeeze(y[:,:,i]),sqrt_inv_y)
-            y = tf.stack(ylist,axis=2)
-        elif self.orthogonalization=='Moore-Penrose':
-            y = tf.divide(y,tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(y),axis=0))))  ## re-normlise latent factors, very important!
-     
+        y = self(inputs, training=is_training)  ## forward pass
+        scale_fact = tf.cast(self.tot_num/tf.shape(y)[0],dtype=float) # scale factor for re-scaling
+        y = tf.divide(y,tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(y),axis=0)))) ## Here, we re-normalize DLVs
+
         total_loss = [None]*(len(inputs))
         total_CC = [None]*(len(inputs))
         total_mse = [None]*(len(inputs))

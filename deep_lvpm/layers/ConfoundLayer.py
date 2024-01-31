@@ -32,7 +32,7 @@ class ConfoundLayer(tf.keras.layers.Layer):
     """
     
     
-    def __init__(self, tot_num, epsilon=1e-4, momentum=0.95, diag_offset=1e-6, run=0, **kwargs):
+    def __init__(self, tot_num, epsilon=1e-4, momentum=0.95, diag_offset=1e-3, run=0, **kwargs):
         
         """
         Initialize the custom layer.
@@ -81,39 +81,34 @@ class ConfoundLayer(tf.keras.layers.Layer):
 
         input1, input2 = inputs
 
-        # Apply batch normalization to each input
+        # Apply batch normalization to each input, this increases model stability
         bn_input1 = self.batch_norm1(input1, training=training)
         bn_input2 = self.batch_norm2(input2, training=training)
 
-        # Concatenate the batch-normalized inputs
+    
+        # # # Concatenate the batch-normalized inputs
         inputs = [bn_input1, bn_input2]
 
+        X=inputs[0]
         conv = inputs[1]
 
         ones = tf.ones((tf.shape(conv)[0], 1))
         conv = tf.concat([ones, conv], axis=1)
       
-        #tf.cond(self.i==0,true_fn=self.moving_variables_initial_values(inputs),false_fn=None)
-        tf.cond(tf.equal(self.run, 0),lambda: self.moving_variables_initial_values([inputs[0], conv]),lambda: None)
+        tf.cond(tf.equal(self.run, 0),lambda: self.moving_variables_initial_values([X, conv]),lambda: None) ## initialise inputs on first call
      
         if training: 
-            ## The algorithm runs differently in training and testing modes. In the training mode,
 
-            X=inputs[0]
+            #beta = tf.matmul(tf.linalg.inv(tf.matmul(tf.transpose(conv),conv)+self.diag_offset*tf.eye(conv.shape[1])),tf.matmul(tf.transpose(conv),X))
+            beta = tf.matmul(tf.linalg.inv(self.moving_conv2+self.diag_offset*tf.eye(conv.shape[1])),self.moving_convX) ## calculate beta for confound regression
+            X_out = tf.subtract(X,tf.matmul(conv, beta)) ## remove confounds
 
-            #beta = (tf.matmul(tf.matmul(tf.linalg.inv(tf.matmul(tf.transpose(conv),conv)+self.diag_offset*tf.eye(conv.shape[1])),tf.transpose(conv)),X))
-            beta = tf.matmul(tf.linalg.inv(self.moving_conv2+self.diag_offset*tf.eye(conv.shape[1])),self.moving_convX) 
-            X_out = tf.subtract(X,tf.matmul(conv, beta))
-               
-            self.update_moving_variables([inputs[0], conv])
+            self.update_moving_variables([X, conv]) ## update parameters for calculating beta
     
         else:
-            
-            X=inputs[0]
-            #X = tf.divide(tf.subtract(inputs[0], (tf.transpose(self.moving_mean)+self.epsilon)),(tf.transpose(tf.math.sqrt(self.moving_var))+self.epsilon))
-            
-            beta = tf.matmul(tf.linalg.inv(self.moving_conv2+self.diag_offset*tf.eye(conv.shape[1])),self.moving_convX) 
-            X_out = tf.subtract(X,tf.matmul(conv, beta))
+             
+            beta = tf.matmul(tf.linalg.inv(self.moving_conv2+self.diag_offset*tf.eye(conv.shape[1])),self.moving_convX) ## calculate beta for confound regression
+            X_out = tf.subtract(X,tf.matmul(conv, beta)) ## remove confounds
 
         return X_out
    
