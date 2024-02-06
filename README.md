@@ -33,9 +33,13 @@ First, we need to download the MNIST dataset, and prepare it for use with the DL
 # import all necessary packages required for this tutorial
 import tensorflow as tf
 import numpy as np
-from StructuralModel import StructuralModel
+import deep_lvpm
 from tensorflow import keras
 from keras import layers
+import numpy as np
+from sklearn.manifold import TSNE
+import matplotlib.pyplot as plt
+from deep_lvpm.models.StructuralModel import StructuralModel ## Here, we import the main StructuralModel class used in deep-lvpm
 
 # Model / data parameters
 num_classes = 10
@@ -116,14 +120,14 @@ The model list and path model are used as inputs to the structural model. The st
 
 ~~~
 
-regularizer_list = [None, None] ## regularizer_list, this is a weight regularizer for the weights in the last layer of the DLVPM model
+regularizer_list = [None,None] ## regularizer_list 
 
 ndims = 9 # the number of DLVs we wish to extract
 tot_num = x_train.shape[0] # the total number of samples, which is used for internal normalisation
 batch_size = 32
 epochs = 20
 
-DLVPM_model = StructuralModel(Path, model_list, regularizer_list, tot_num, ndims, epochs, batch_size)
+DLVPM_Model = StructuralModel(Path, model_list, regularizer_list, tot_num, ndims, epochs, batch_size)
 
 ~~~
 
@@ -131,9 +135,9 @@ It is then necessary to compile the model before training. Here, we must define 
 
 ~~~
 
-optimizer_list = [tf.keras.optimizers.Adam(learning_rate=1e-5),tf.keras.optimizers.Adam(learning_rate=1e-5),tf.keras.optimizers.Adam(learning_rate=1e-5)]
+optimizer_list = [keras.optimizers.Adam(learning_rate=1e-4),keras.optimizers.Adam(learning_rate=1e-4)]
 
-DLVPM_model.compile(optimizer=optimizer_list)
+DLVPM_Model.compile(optimizer=optimizer_list)
 
 ~~~
 
@@ -141,7 +145,7 @@ We then run model training using the fit function:
 
 ~~~
 
-DLVPM_model.fit(Data_list, batch_size=batch_size, epochs=epochs,verbose=True)
+DLVPM_Model.fit(data_train_list, batch_size=batch_size, epochs=epochs,verbose=True, validation_split=0.1)
 
 ~~~
 
@@ -149,7 +153,7 @@ We can then evaluate the model:
 
 ~~~
 
-metrics = DLVPM_model.evaluate(Data_list)
+metrics = DLVPM_Model.evaluate(data_test_list)
 
 ~~~
 
@@ -159,7 +163,7 @@ We can use the predict function to obtain the deep latent variables for differen
 
 ~~~
 
-DLVs = DLVPM_model.predict(Data_list)
+DLVs = DLVPM_Model.predict(data_test_list)
 
 ~~~
 
@@ -193,8 +197,43 @@ DLVPM_Model.save('output_folder/DLVPM_Model.keras')
 
 Note that, as the model utilises custom keras/tensorflow models and layers, it is necessary to save the model in the new .keras format. Problems may arise from saving the model in older formats utilised by keras/tensorflow.
 
-In the text below, we give an explanation of each of the custom model and layer types that are used in the DLVPM toolbox.
+We can obtain DLVs from a single data-type by calling that model in the model_list, e.g.:
 
+~~~
+
+image_DLVs = DLVPM_Model.model_list[0].predict(data_test_list[0])
+
+~~~
+
+If we apply a tsne to these image DLVs, we can see that the DLVPM model has learned a mapping between the image data and the image labels,which means that DLVs naturally segregate image labels in a tnse plot:
+
+~~~
+
+## Here, we randomy select 100 examples for plotting
+random_indices = np.random.choice(image_DLVs.shape[0], size=100, replace=False)
+
+image_DLVs_plot = image_DLVs[random_indices,:]
+y_test_plot = y_test[random_indices,:]
+
+# Apply t-SNE
+tsne = TSNE(n_components=2, random_state=42)
+tsne_results = tsne.fit_transform(image_DLVs_plot)
+
+# Plot
+plt.figure(figsize=(12, 8))
+
+for i in range(y_test_plot.shape[1]):
+    points = tsne_results[y_test_plot[:, i] == 1]
+    plt.scatter(points[:, 0], points[:, 1], label=f'Category {i+1}')
+
+plt.title('t-SNE projection of the dataset')
+plt.legend()
+plt.savefig('/Users/ing/Downloads/figure_out.png')
+plt.show()
+
+~~~
+
+In the text below, we give an explanation of each of the custom model and layer types that are used in the DLVPM toolbox.
 
 # StructuralModel
 

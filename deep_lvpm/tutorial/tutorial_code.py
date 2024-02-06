@@ -7,7 +7,6 @@ from keras import layers
 import numpy as np
 from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
-
 from deep_lvpm.models.StructuralModel import StructuralModel ## Here, we import the main StructuralModel class used in deep-lvpm
 
 # Model / data parameters
@@ -52,6 +51,8 @@ MNIST_image_model = keras.Sequential(
 data_input = keras.Input(shape = 10)
 MNIST_label_model=keras.Model(inputs=data_input,outputs=data_input)
   
+model_list = [MNIST_image_model, MNIST_label_model] 
+
 # Here, we define a new adjacency matrix, which defines which data views to connect
 Path = tf.constant([[0,1],
             [1,0]])
@@ -62,8 +63,6 @@ ndims = 9 # the number of DLVs we wish to extract
 tot_num = x_train.shape[0] # the total number of samples, which is used for internal normalisation
 batch_size = 32
 epochs = 20
-
-model_list = [MNIST_image_model, MNIST_label_model] 
 
 DLVPM_Model = StructuralModel(Path, model_list, regularizer_list, tot_num, ndims, epochs, batch_size)
 
@@ -82,7 +81,7 @@ DLVs = DLVPM_Model.predict(data_test_list)
 image_DLVs = DLVPM_Model.model_list[0].predict(data_test_list[0])
 
 ## Here, we randomy select 100 examples for plotting
-random_indices = np.random.choice(image_DLVs.shape[0], size=1000, replace=False)
+random_indices = np.random.choice(image_DLVs.shape[0], size=100, replace=False)
 
 image_DLVs_plot = image_DLVs[random_indices,:]
 y_test_plot = y_test[random_indices,:]
