@@ -151,7 +151,27 @@ class StructuralModel(tf.keras.Model):
         
         return out
     
-    
+    def organize_inputs_by_model(self, data_inputs):
+        organized_inputs = []
+        data_index = 0
+
+        for model in self.model_list:
+            
+            num_inputs = len(model.inputs) if hasattr(model, 'inputs') else 1
+
+            if num_inputs == 1:
+                # For a single input model, append the data directly.
+                organized_inputs.append(data_inputs[data_index])
+                data_index += 1
+            else:
+                # For models requiring multiple inputs, append a list of inputs.
+                inputs_for_model = data_inputs[data_index:data_index + num_inputs]
+                organized_inputs.append(inputs_for_model)
+                data_index += num_inputs
+
+        return organized_inputs
+
+
     def train_step(self, inputs):
         
         """
@@ -165,10 +185,13 @@ class StructuralModel(tf.keras.Model):
         """
        
         ## inputs is passed by tensorflow as a list of lists, this must be unpacked
-        inputs=inputs[0]
+        #inputs=inputs[0]
         
         # Here, we run the current data-iteration through the global model in a forward 
         # pass. We do this so that we can re-normalise the weights. 
+
+        ## keras/tensorflow works best with flattened lists, internally we can work better with nested lists
+        inputs = self.organize_inputs_by_model(inputs)
         
         is_training = False
         #
@@ -249,7 +272,9 @@ class StructuralModel(tf.keras.Model):
         """
         
         ## inputs is passed by tensorflow as a list of lists, this must be unpacked
-        inputs=inputs[0]
+        #inputs=inputs[0]
+
+        inputs = self.organize_inputs_by_model(inputs)
         
         y = self(inputs, training=False)  ## forward pass
     
