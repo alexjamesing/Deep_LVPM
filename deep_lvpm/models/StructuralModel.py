@@ -59,7 +59,7 @@ class StructuralModel(tf.keras.Model):
     """
 
     
-    def __init__(self, Path, model_list, regularizer_list, tot_num, ndims, epochs, batch_size, orthogonalization='Moore-Penrose', momentum=0.95, epsilon=1e-4, run_from_config=False, **kwargs):
+    def __init__(self, Path, model_list, regularizer_list, tot_num, ndims, orthogonalization='Moore-Penrose', momentum=0.95, epsilon=1e-4, run_from_config=False, **kwargs):
         
         """
         Initializes the StructuralModel instance.
@@ -71,8 +71,6 @@ class StructuralModel(tf.keras.Model):
             model_list (list): A list of Keras models for each data-view.
             tot_num (int): Total number of features across all batches.
             ndims (int): Number of orthogonal latent variables to construct.
-            epochs (int): Number of training epochs.
-            batch_size (int): Size of the batches used during training.
             orthogonalization (str, optional): Orthogonalisation procedure. Defaults to 'Moore-Penrose'.
             momentum (Float, optional): The momentum defines how quickly global parameters such as means and correlation matrices are updated
             epsilon (Float, optional): "epsilon" (often denoted as ε) is a small constant added for numerical stability in batch updates
@@ -82,10 +80,8 @@ class StructuralModel(tf.keras.Model):
         
         self.Path = Path
         self.model_list = model_list
-        self.epochs = epochs
         self.tot_num = tot_num
         self.ndims = ndims
-        self.batch_size = batch_size
         self.momentum = momentum
         self.epsilon = epsilon
         self.orthogonalization=orthogonalization
@@ -143,7 +139,10 @@ class StructuralModel(tf.keras.Model):
         Returns:
             tf.Tensor: The output of the model after processing the inputs.
         """
-        out=tf.stack([self.model_list[vie](inputs[vie]) for vie in range(len(self.model_list))],axis=2) 
+
+        inputs_nested = self.organize_inputs_by_model(inputs) ## this function organises flat inputs into a list of lists, which makes model training easier
+
+        out=tf.stack([self.model_list[vie](inputs_nested[vie]) for vie in range(len(self.model_list))],axis=2) 
         
         # scale_fact = tf.cast(self.tot_num/tf.shape(out)[0],dtype=float) #
         # out = tf.divide(out,tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(out),axis=0))))  ## re-normlise latent factors, very important!
@@ -178,39 +177,37 @@ class StructuralModel(tf.keras.Model):
         Perform a training step, updating the model weights.
 
         Args:
-            inputs (list): A list of inputs for each data-view.
+            inputs (list or tuple): A list of inputs for each data-view.
 
         Returns:
             dict: A dictionary containing the total loss, cross metric, and mean squared error loss.
         """
        
-        ## inputs is passed by tensorflow as a list of lists, this must be unpacked
-        #inputs=inputs[0]
+        ## tensorflow packs inputs in another tuple, this should be unpacked
+        inputs=inputs[0]
         
         # Here, we run the current data-iteration through the global model in a forward 
         # pass. We do this so that we can re-normalise the weights. 
-
-        ## keras/tensorflow works best with flattened lists, internally we can work better with nested lists
-        inputs = self.organize_inputs_by_model(inputs)
-        
         is_training = False
         #
         y = self(inputs, training=is_training)  ## forward pass
         scale_fact = tf.cast(self.tot_num/tf.shape(y)[0],dtype=float) # scale factor for re-scaling
         y = tf.divide(y,tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(y),axis=0)))) ## Here, we re-normalize DLVs
 
-        total_loss = [None]*(len(inputs))
-        total_CC = [None]*(len(inputs))
-        total_mse = [None]*(len(inputs))
+        total_loss = [None]*(len(self.model_list))
+        total_CC = [None]*(len(self.model_list))
+        total_mse = [None]*(len(self.model_list))
         
+        inputs_nested = self.organize_inputs_by_model(inputs) ## this function organises flat inputs into a list of lists, which makes model training easier
+
         ## Iterate through training data-views
-        for vie in range(len(inputs)):
+        for vie in range(len(self.model_list)):
            
         
             with tf.GradientTape() as tape:
                 
                 ## forward pass
-                y_pred = self.model_list[vie](inputs[vie], training=True)
+                y_pred = self.model_list[vie](inputs_nested[vie], training=True)
                 
                 mse_loss = self.mse_loss(y, y_pred, vie)
                 
@@ -271,23 +268,24 @@ class StructuralModel(tf.keras.Model):
         
         """
         
-        ## inputs is passed by tensorflow as a list of lists, this must be unpacked
-        #inputs=inputs[0]
+        ## tensorflow packs inputs in another tuple, this should be unpacked
+        inputs=inputs[0]
 
-        inputs = self.organize_inputs_by_model(inputs)
+        #inputs = self.organize_inputs_by_model(inputs)
         
         y = self(inputs, training=False)  ## forward pass
     
-        total_loss = [None]*(len(inputs))
-        total_CC = [None]*(len(inputs))
-        total_mse = [None]*(len(inputs))
+        total_loss = [None]*(len(self.model_list))
+        total_CC = [None]*(len(self.model_list))
+        total_mse = [None]*(len(self.model_list))
         
+        inputs_nested = self.organize_inputs_by_model(inputs)
         ## Iterate through training data-views
-        for vie in range(len(inputs)):
+        for vie in range(len(self.model_list)):
           
                 
             ## forward pass
-            y_pred = self.model_list[vie](inputs[vie], training=False)
+            y_pred = self.model_list[vie](inputs_nested[vie], training=False)
             
             mse_loss = self.mse_loss(y, y_pred, vie)
             internal_loss = self.model_list[vie].losses
@@ -453,8 +451,6 @@ class StructuralModel(tf.keras.Model):
             "regularizer_list": regularized_model_list,
             "tot_num": self.tot_num,
             "ndims": self.ndims,  
-            "epochs": self.epochs,
-            "batch_size": self.batch_size,
             "orthogonalization": self.orthogonalization
         }
     
