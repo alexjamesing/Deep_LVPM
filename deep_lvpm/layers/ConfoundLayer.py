@@ -7,12 +7,10 @@ Created on Wed Jun 14 13:24:12 2023
 """
 
 import tensorflow as tf
-import scipy.io as sio
 import tensorflow.keras as keras
 
-
 import tensorflow as tf
-import scipy.io as sio
+
 import tensorflow.keras as keras
 
 
@@ -79,7 +77,12 @@ class ConfoundLayer(tf.keras.layers.Layer):
         
         """
 
+
+
         input1, input2 = inputs
+
+        # input1 = tf.cast(input1, tf.float32) # cast to float 32 to ensure numeric stability
+        # input2 = tf.cast(input2, tf.float32) # cast to float 32 to ensure numeric stability
 
         # Apply batch normalization to each input, this increases model stability
         bn_input1 = self.batch_norm1(input1, training=training)
@@ -99,8 +102,8 @@ class ConfoundLayer(tf.keras.layers.Layer):
      
         if training: 
 
-            #beta = tf.matmul(tf.linalg.inv(tf.matmul(tf.transpose(conv),conv)+self.diag_offset*tf.eye(conv.shape[1])),tf.matmul(tf.transpose(conv),X))
-            beta = tf.matmul(tf.linalg.inv(self.moving_conv2+self.diag_offset*tf.eye(conv.shape[1])),self.moving_convX) ## calculate beta for confound regression
+            beta = tf.matmul(tf.linalg.inv(tf.matmul(tf.transpose(conv),conv)+self.diag_offset*tf.eye(conv.shape[1])),tf.matmul(tf.transpose(conv),X))
+            #beta = tf.matmul(tf.linalg.inv(self.moving_conv2+self.diag_offset*tf.eye(conv.shape[1])),self.moving_convX) ## calculate beta for confound regression
             #tf.print(tf.reduce_mean(tf.math.abs(beta[1:])))
             #tf.print(tf.reduce_mean(tf.math.abs(beta)))
             X_out = tf.subtract(X,tf.matmul(conv, beta)) ## remove confounds
