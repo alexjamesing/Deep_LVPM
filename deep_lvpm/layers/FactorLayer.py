@@ -17,6 +17,7 @@ from keras import saving
 # changes to git again change
 
 @tf.keras.saving.register_keras_serializable(package="deep_lvpm",name="FactorLayer")
+#@tf.keras.utils.register_keras_serializable(package="deep_lvpm",name="FactorLayer")
 class FactorLayer(tf.keras.layers.Layer):
     
     """This layer should be placed at the end of DLVPM models. The layer 
@@ -74,7 +75,11 @@ class FactorLayer(tf.keras.layers.Layer):
         # # Additional custom parameters
         self.tot_num = tot_num #kwargs.get("tot_num") ## This is the total number of samples in the full dataset
         self.ndims = ndims #kwargs.get("ndims") ## This is the total number of factors we wish to extract
-        self.run=tf.Variable(run,trainable=False) ## This variable tracks the number of runs we 
+        self.run = self.add_weight(name="run",
+                           shape=(),
+                           dtype='int32',
+                           initializer=tf.constant_initializer(run),
+                           trainable=False)
        
     def build(self, input_shape):
         
@@ -105,7 +110,7 @@ class FactorLayer(tf.keras.layers.Layer):
         self.DLV_var = self.add_weight(name = 'DLV_moving_std', shape = [self.ndims,1], initializer='ones', trainable=False) 
         
         self.moving_convX = self.add_weight(name = 'moving_convX', shape=[self.ndims, input_shape[1]], initializer='zeros', trainable=False)
-        self.i=tf.Variable(0,trainable=False)
+        #self.i=tf.Variable(0,trainable=False)
 
         super(FactorLayer, self).build(input_shape) ## ensures that the layer registers as built
         #self.run=tf.Variable(0,trainable=False)
@@ -126,6 +131,8 @@ class FactorLayer(tf.keras.layers.Layer):
         Returns:
             tf.Tensor: The output tensor after applying the transformations.
         """
+
+        #inputs = tf.cast(inputs, tf.float32) ## cast to float32 to ensure numeric stability
 
         X = self.batch_norm1(inputs, training=training)
         
@@ -159,7 +166,7 @@ class FactorLayer(tf.keras.layers.Layer):
 
         return out
    
-    
+    #@tf.function
     def moving_variables_initial_values(self, X):
        
         """ This function is called the first time the layer is called with data, i.e. when 
@@ -190,6 +197,7 @@ class FactorLayer(tf.keras.layers.Layer):
             
         self.run.assign(1)
 
+    #@tf.function
     def update_moving_variables(self, inputs):
         
         """ This function is called for every batch the model sees during training. This function
@@ -216,7 +224,7 @@ class FactorLayer(tf.keras.layers.Layer):
         for i in range(self.ndims): # Here, we loop through weight projection vectors 
             self.linear_layer_static[i].assign(self.linear_layer_list[i])
         
-
+    #@tf.function
     def orthogonalisation_train(self, inputs):
         
         """ This function is called multiple times during model training. The purpose of this function is to 
@@ -236,6 +244,8 @@ class FactorLayer(tf.keras.layers.Layer):
         
         return ortho_output 
     
+
+    #@tf.function
     def orthogonalisation_test(self, inputs):
         
         """ This function is called during model testing. This function orthogonalises the data with 
@@ -253,7 +263,7 @@ class FactorLayer(tf.keras.layers.Layer):
 
         return ortho_output 
         
-
+    #@tf.function
     def calculate_batch_DLV_static(self, X):
         
         """ This function is used to calculate DLVs at the batch level. These batch level DLVs 
@@ -273,7 +283,7 @@ class FactorLayer(tf.keras.layers.Layer):
                 
         return DLV_all
     
-
+    #@tf.function
     def calculate_batch_DLV_train(self, X, DLV_all):
         
         """ This function is used to calculate DLVs at the batch level. These batch level DLVs 
@@ -292,7 +302,7 @@ class FactorLayer(tf.keras.layers.Layer):
                 
         return out
     
-
+    #@tf.function
     def calculate_DLV_test(self, X):
 
         """ This function is used to calculate DLVs at test time. This function uses the moving 

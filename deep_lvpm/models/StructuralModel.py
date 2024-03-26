@@ -26,6 +26,7 @@ loss_tracker_mse = tf.keras.metrics.Mean(name="mean_squared_loss")
 corr_tracker = tf.keras.metrics.Mean(name="corr_metric")
 
 @tf.keras.saving.register_keras_serializable(package="deep_lvpm",name="StructuralModel")
+#@tf.keras.utils.register_keras_serializable(package="deep_lvpm",name="StructuralModel")
 class StructuralModel(tf.keras.Model):
     
     """
@@ -39,6 +40,7 @@ class StructuralModel(tf.keras.Model):
     Attributes:
         Path: A binary adjacency matrix defining the connections between data-views.
         model_list: A list of Keras models for each data-view.
+        regularizer_list (list): A list of regularizers for each model, applied to the projection layer
         tot_num: Total number of features across all batches.
         ndims: Number of orthogonal latent variables to construct.
         epochs: Number of training epochs.
@@ -79,6 +81,7 @@ class StructuralModel(tf.keras.Model):
         super().__init__(**kwargs)    
         
         self.Path = Path
+        self.check_path() ## this function checks the validity of the path
         self.model_list = model_list
         self.tot_num = tot_num
         self.ndims = ndims
@@ -90,11 +93,37 @@ class StructuralModel(tf.keras.Model):
         self.loss_tracker_mse = tf.keras.metrics.Mean(name="mse_loss")
         self.regularizer_list = regularizer_list
 
+        # Check if the zeroth dimension of Path is equal to the length of model_list and regularizer_list
+        path_dim = Path.shape[0] if hasattr(Path, 'shape') else len(Path)  # Handles both TensorFlow tensors and NumPy arrays
+        if not path_dim == len(model_list) == len(regularizer_list):
+            warnings.warn("The dimension of 'Path' does not match the length of 'model_list' and 'regularizer_list'. They should all be equal.", UserWarning)
+
         if not run_from_config:
         # Add factor layer to each model in the list
             self.model_list = [self.add_DLVPM_layer(model, regularizer) for model, regularizer in zip(model_list, regularizer_list)]
         else:
             self.model_list = model_list
+
+    def check_path(self):
+        # Convert TensorFlow tensor to numpy array if necessary
+        if isinstance(self.Path, tf.Tensor):
+            matrix = self.Path.numpy()
+        else:
+            matrix = self.Path
+        
+        # Check if all entries are 0 or 1
+        if not np.all(np.isin(matrix, [0, 1])):
+            print("Warning: The matrix contains entries other than 0 or 1.")
+        
+        # Check symmetry
+        if not np.array_equal(matrix, matrix.T):
+            print("Warning: The matrix is not symmetric.")
+        
+        # Check each row contains at least one 1
+        if np.any(np.sum(matrix, axis=1) == 0):
+            rows_with_no_ones = np.where(np.sum(matrix, axis=1) == 0)[0]
+            for row in rows_with_no_ones:
+                print(f"Warning: Row {row} is disconnected (does not contain a 1).")
     
     def add_DLVPM_layer(self, model, regularizer):
         """
@@ -110,7 +139,7 @@ class StructuralModel(tf.keras.Model):
             # For sequential models, we can just add a new layer on top
             if self.orthogonalization == 'Moore-Penrose':
                 model.add(FactorLayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum,epsilon=self.epsilon))
-            if self.orthogonalization == 'zca':
+            elif self.orthogonalization == 'zca':
                 model.add(ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum,epsilon=self.epsilon))
             else:
                 print('Orthogonalization mode not recognised, must be "Moore-Penrose" or "zca"')
@@ -120,10 +149,12 @@ class StructuralModel(tf.keras.Model):
                 input = model.input
                 x = FactorLayer(kernel_regularizer=regularizer,tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum,epsilon=self.epsilon)(model.output)
                 model = tf.keras.Model(inputs=input, outputs=x)
-            if self.orthogonalization == 'zca':
+            elif self.orthogonalization == 'zca':
                 input = model.input
                 x = ZCALayer(kernel_regularizer=regularizer,tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum,epsilon=self.epsilon)(model.output)
                 model = tf.keras.Model(inputs=input, outputs=x)
+            else:
+                print('Orthogonalization mode not recognised, must be "Moore-Penrose" or "zca"')
         else:
             raise ValueError("The input model must be either a tf.keras.Sequential or a tf.keras.Model instance.")
         return model
@@ -249,8 +280,13 @@ class StructuralModel(tf.keras.Model):
         
         super().compile()
         
-        #self.global_build()
-        
+        # Check if optimizer is a list and its length matches the length of model_list
+        if isinstance(optimizer, list) and len(optimizer) != len(self.model_list):
+            warnings.warn(
+                "When providing a list of optimizers, it must be the same length as 'model_list'.",
+                UserWarning
+            )
+
         if isinstance(optimizer, list):
             for vie in range(len(self.model_list)):
                 self.model_list[vie].compile(optimizer[vie])
@@ -258,7 +294,7 @@ class StructuralModel(tf.keras.Model):
             for vie in range(len(self.model_list)):
                 self.model_list[vie].compile(optimizer)
         else:
-            print('Error: optimizer must either be of the tf.keras.optimizer class, or a list of objects of this class')
+            print('Error: optimizer must either be a list of objects of the tf.keras.optimizer class')
         
 
     def test_step(self, inputs):
@@ -394,8 +430,9 @@ class StructuralModel(tf.keras.Model):
 
             # Compute the correlation matrix for the current dimension
             correlation_matrix = tf.linalg.matmul(normalized_DLVs, normalized_DLVs, transpose_a=True) / tf.cast(tf.shape(dim_DLVs)[0], tf.float32)
+            tf.print(correlation_matrix)
             correlation_matrices.append(correlation_matrix)
-
+        
         return correlation_matrices
     
 

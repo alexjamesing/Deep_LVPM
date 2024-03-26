@@ -15,6 +15,7 @@ import tensorflow.keras as keras
 
 
 @keras.saving.register_keras_serializable(package="deep_lvpm",name="ConfoundLayer")
+#@tf.keras.utils.register_keras_serializable(package="deep_lvpm",name="ConfoundLayer")
 class ConfoundLayer(tf.keras.layers.Layer):
     
     """ The purpose of this layer is to orthogonalise data-inputs with respect
@@ -47,9 +48,13 @@ class ConfoundLayer(tf.keras.layers.Layer):
         self.momentum = momentum ## This is the amount of momentum that covariance matrices are subject to (see pseudo-code for more details)
         self.epsilon = epsilon ## This is the offset determined during batch normalisation
         self.diag_offset =diag_offset ## This is a offset added to the diagonal of the covariance matrix between confounds, to ensure that this matrix is invertable
-        self.batch_norm1 = tf.keras.layers.BatchNormalization()
-        self.batch_norm2 = tf.keras.layers.BatchNormalization()
-        self.run=tf.Variable(run,trainable=False)
+        self.batch_norm1 = tf.keras.layers.BatchNormalization(epsilon=self.epsilon,momentum=self.momentum)
+        self.batch_norm2 = tf.keras.layers.BatchNormalization(epsilon=self.epsilon,momentum=self.momentum)
+        self.run = self.add_weight(name="run",
+                           shape=(),
+                           dtype='int32',
+                           initializer=tf.constant_initializer(run),
+                           trainable=False)
 
     def build(self, input_shape):
         
@@ -58,17 +63,12 @@ class ConfoundLayer(tf.keras.layers.Layer):
         The function also builds the moving mean and moving standard deviation used to normalise the input data.
         """
       
-        ## self.moving_mean and self.moving_std are used to z-normalise the data-inputs to this, last layer, of the neural network, used in the testing/prediction phase only
-        self.moving_mean = self.add_weight(name = 'moving_mean', shape = [input_shape[0][1],1], initializer='zeros', trainable=False) ## inputs are normalised using: inputs - self.moving_mean
-        self.moving_var = self.add_weight(name = 'moving_std', shape = [input_shape[0][1],1], initializer='ones', trainable=False) ## inputs are
-        
         self.moving_conv2 = self.add_weight(name = 'moving_conv2', shape=[input_shape[1][1]+1, input_shape[1][1]+1], initializer='zeros', trainable=False)
-       
         self.moving_convX = self.add_weight(name = 'moving_convX', shape=[input_shape[1][1]+1, input_shape[0][1]], initializer='zeros', trainable=False)
         
         
         
-    @tf.function
+    #@tf.function
     def call(self, inputs, training=None):    
         
         """ We run the call function during model training. This call function starts with an initialisation,
@@ -76,7 +76,6 @@ class ConfoundLayer(tf.keras.layers.Layer):
         function performs differently during training and testing.
         
         """
-
 
 
         input1, input2 = inputs
@@ -97,15 +96,25 @@ class ConfoundLayer(tf.keras.layers.Layer):
 
         ones = tf.ones((tf.shape(conv)[0], 1))
         conv = tf.concat([ones, conv], axis=1)
+
+        #def run_initialization():
+        #    self.moving_variables_initial_values(X)
+        #    return X
       
         tf.cond(tf.equal(self.run, 0),lambda: self.moving_variables_initial_values([X, conv]),lambda: None) ## initialise inputs on first call
      
+        #tf.cond(tf.equal(self.run, 0), run_initialization, lambda: X)
+
+        # if tf.equal(self.run, 0):
+        #     self.moving_variables_initial_values([X, conv])
+
+
         if training: 
 
             beta = tf.matmul(tf.linalg.inv(tf.matmul(tf.transpose(conv),conv)+self.diag_offset*tf.eye(conv.shape[1])),tf.matmul(tf.transpose(conv),X))
-            #beta = tf.matmul(tf.linalg.inv(self.moving_conv2+self.diag_offset*tf.eye(conv.shape[1])),self.moving_convX) ## calculate beta for confound regression
-            #tf.print(tf.reduce_mean(tf.math.abs(beta[1:])))
+            
             #tf.print(tf.reduce_mean(tf.math.abs(beta)))
+
             X_out = tf.subtract(X,tf.matmul(conv, beta)) ## remove confounds
 
             self.update_moving_variables([X, conv]) ## update parameters for calculating beta
@@ -117,7 +126,7 @@ class ConfoundLayer(tf.keras.layers.Layer):
 
         return X_out
    
-    
+    #@tf.function
     def moving_variables_initial_values(self, inputs):
        
         """ This function is called the first time the layer is called with data, i.e. when 
@@ -130,9 +139,6 @@ class ConfoundLayer(tf.keras.layers.Layer):
 
         scale_fact = tf.cast(self.tot_num/tf.shape(inputs[0])[0],dtype=float)
 
-        self.moving_mean.assign(tf.expand_dims(tf.math.reduce_mean(inputs[0], axis=0),axis=1))
-        self.moving_var.assign(tf.expand_dims(tf.math.reduce_variance(inputs[0], axis=0),axis=1))
-
         X=inputs[0]
         #X=tf.divide(tf.subtract(inputs[0],tf.transpose(self.moving_mean)),tf.transpose(tf.math.sqrt(self.moving_var)+self.epsilon))
 
@@ -141,7 +147,7 @@ class ConfoundLayer(tf.keras.layers.Layer):
             
         self.run.assign(1)
         
-   
+    #@tf.function
     def update_moving_variables(self, inputs):
         
         """ This function is called for every batch the model sees during training. This function
@@ -150,9 +156,6 @@ class ConfoundLayer(tf.keras.layers.Layer):
         """
    
         scale_fact = tf.cast(self.tot_num/tf.shape(inputs[0])[0],dtype=float)
-        
-        self.moving_mean.assign(self.momentum*self.moving_mean + (tf.constant(1,dtype=float)-self.momentum)*tf.expand_dims(tf.math.reduce_mean(inputs[0], axis=0),axis=1))
-        self.moving_var.assign(self.momentum*self.moving_var + (tf.constant(1,dtype=float)-self.momentum)*tf.expand_dims(tf.math.reduce_variance(inputs[0], axis=0),axis=1))
         
         #X=tf.divide(tf.subtract(inputs[0],tf.transpose(self.moving_mean)),tf.transpose(tf.math.sqrt(self.moving_var)+self.epsilon))
         X=inputs[0]

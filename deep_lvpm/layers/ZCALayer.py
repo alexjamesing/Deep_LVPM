@@ -16,6 +16,7 @@ import tensorflow.keras.layers
 # changes to git
 
 @tf.keras.saving.register_keras_serializable(package="deep_lvpm",name="ZCALayer")
+#@tf.keras.utils.register_keras_serializable(package="deep_lvpm",name="ZCALayer")
 class ZCALayer(tf.keras.layers.Layer):
     
     """This layer should be placed at the end of DLVPM models. The layer 
@@ -87,7 +88,11 @@ class ZCALayer(tf.keras.layers.Layer):
         self.tot_num = tot_num #kwargs.get("tot_num") ## This is the total number of samples in the full dataset
         self.ndims = ndims #kwargs.get("ndims") ## This is the total number of factors we wish to extract
         self.batch_norm1 = tf.keras.layers.BatchNormalization(momentum=momentum,epsilon=epsilon)
-        self.run=tf.Variable(run,trainable=False) ## This variable tracks the number of runs we 
+        self.run = self.add_weight(name="run",
+                           shape=(),
+                           dtype='int32',
+                           initializer=tf.constant_initializer(run),
+                           trainable=False)
        
 
 
@@ -167,7 +172,7 @@ class ZCALayer(tf.keras.layers.Layer):
 
             out = tf.matmul(X,self.project)
 
-            sqrt_inv_out = tf.linalg.sqrtm(tf.linalg.inv(tf.matmul(tf.transpose(out),out)+self.diag_offset*tf.eye(self.moving_conv2.shape[0])))
+            sqrt_inv_out = tf.linalg.sqrtm(tf.linalg.inv(self.moving_conv2+self.diag_offset*tf.eye(self.moving_conv2.shape[0])))
             out = tf.matmul(out,sqrt_inv_out)
             
         return out
