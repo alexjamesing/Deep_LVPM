@@ -25,7 +25,8 @@ loss_tracker_total = tf.keras.metrics.Mean(name="total_loss")
 loss_tracker_mse = tf.keras.metrics.Mean(name="mean_squared_loss")
 corr_tracker = tf.keras.metrics.Mean(name="corr_metric")
 
-@tf.keras.saving.register_keras_serializable(package="deep_lvpm",name="StructuralModel")
+
+@tf.keras.utils.register_keras_serializable(package='YourPackageName', name='YourCustomName')
 class StructuralModel(tf.keras.Model):
     
     """

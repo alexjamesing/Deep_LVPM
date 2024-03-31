@@ -16,7 +16,8 @@ import keras
 from keras import saving
 # changes to git again change
 
-@tf.keras.saving.register_keras_serializable(package="deep_lvpm",name="FactorLayer")
+
+@tf.keras.utils.register_keras_serializable(package='YourPackageName', name='YourCustomName')
 class FactorLayer(tf.keras.layers.Layer):
     
     """This layer should be placed at the end of DLVPM models. The layer 
@@ -75,6 +76,7 @@ class FactorLayer(tf.keras.layers.Layer):
         self.tot_num = tot_num #kwargs.get("tot_num") ## This is the total number of samples in the full dataset
         self.ndims = ndims #kwargs.get("ndims") ## This is the total number of factors we wish to extract
         self.run=tf.Variable(run,trainable=False) ## This variable tracks the number of runs we 
+        self.first_run = True
        
     def build(self, input_shape):
         
@@ -129,12 +131,16 @@ class FactorLayer(tf.keras.layers.Layer):
 
         X = self.batch_norm1(inputs, training=training)
         
-        def run_initialization():
-            self.moving_variables_initial_values(X)
-            return X
+        # def run_initialization():
+        #     self.moving_variables_initial_values(X)
+        #     return X
+
+        # if self.first_run:
+        #     self.moving_variables_initial_values(X)
+
 
         # Replace Python if statement with tf.cond for graph mode compatibility
-        tf.cond(tf.equal(self.run, 0), run_initialization, lambda: X)
+        # tf.cond(tf.equal(self.run, 0), run_initialization, lambda: X)
 
         if training:
             
@@ -198,12 +204,14 @@ class FactorLayer(tf.keras.layers.Layer):
         """
    
         scale_fact = tf.cast(self.tot_num/tf.shape(inputs[0])[0],dtype=float)
+        momentum = tf.where(tf.cast(self.run, tf.float32)> tf.cast(1, tf.float32), self.momentum, tf.zeros_like(tf.cast(0, tf.float32)))
+
         
         batch_DLV_mean = tf.expand_dims(tf.math.reduce_mean(inputs[1], axis=0),axis=1)
         batch_DLV_var = tf.expand_dims(tf.math.reduce_variance(inputs[1], axis=0),axis=1)
 
-        self.DLV_mean.assign(self.momentum*self.DLV_mean + (tf.constant(1,dtype=float)-self.momentum)*batch_DLV_mean)
-        self.DLV_var.assign(self.momentum*self.DLV_var + (tf.constant(1,dtype=float)-self.momentum)*batch_DLV_var)
+        self.DLV_mean.assign(momentum*self.DLV_mean + (tf.constant(1,dtype=float)-momentum)*batch_DLV_mean)
+        self.DLV_var.assign(momentum*self.DLV_var + (tf.constant(1,dtype=float)-momentum)*batch_DLV_var)
 
         batch_DLV_norm = tf.divide(tf.subtract(inputs[1],tf.transpose(batch_DLV_mean)),tf.transpose(tf.math.sqrt(batch_DLV_var)))
         #batch_DLV_norm = tf.divide(tf.subtract(inputs[1],tf.transpose(self.DLV_mean)),tf.transpose(tf.math.sqrt(self.DLV_var)+self.epsilon))
@@ -211,10 +219,12 @@ class FactorLayer(tf.keras.layers.Layer):
         #ones = tf.ones((tf.shape(batch_DLV_norm)[0], 1))
         #batch_DLV_norm = tf.concat([ones, batch_DLV_norm], axis=1)
 
-        self.moving_convX.assign(self.momentum*self.moving_convX + scale_fact*(tf.constant(1,dtype=float)-self.momentum)*tf.matmul(tf.transpose(batch_DLV_norm),inputs[0]))
+        self.moving_convX.assign(momentum*self.moving_convX + scale_fact*(tf.constant(1,dtype=float)-momentum)*tf.matmul(tf.transpose(batch_DLV_norm),inputs[0]))
         
         for i in range(self.ndims): # Here, we loop through weight projection vectors 
             self.linear_layer_static[i].assign(self.linear_layer_list[i])
+
+        self.run = self.run+1
         
 
     def orthogonalisation_train(self, inputs):
