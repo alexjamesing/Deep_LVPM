@@ -48,8 +48,8 @@ class ConfoundLayer(tf.keras.layers.Layer):
         self.diag_offset =diag_offset ## This is a offset added to the diagonal of the covariance matrix between confounds, to ensure that this matrix is invertable
         self.batch_norm1 = tf.keras.layers.BatchNormalization()
         self.batch_norm2 = tf.keras.layers.BatchNormalization()
-        self.run=tf.Variable(run,trainable=False)
-        self.first_run = True  # Initialize the flag
+        self.run=self.add_weight(shape = (), initializer = 'zeros',trainable=False) ## This variable tracks the number of runs we 
+        self.first_run = tf.Variable(True,trainable=False)
 
     def build(self, input_shape):
         
@@ -99,11 +99,7 @@ class ConfoundLayer(tf.keras.layers.Layer):
         conv = tf.concat([ones, conv], axis=1)
       
         #tf.cond(tf.equal(self.run, 0),lambda: self.moving_variables_initial_values([X, conv]),lambda: None) ## initialise inputs on first call
-        # if self.first_run:
-        #     self.moving_variables_initial_values([X, conv])
-        #     self.first_run = False
-            
-
+       
 
         if training: 
 
@@ -123,29 +119,32 @@ class ConfoundLayer(tf.keras.layers.Layer):
         return X_out
    
     
-    def moving_variables_initial_values(self, inputs):
+    # def moving_variables_initial_values(self, inputs):
+
+        
        
-        """ This function is called the first time the layer is called with data, i.e. when 
-        self.i=0. Here, the layer takes the first batch of data, and uses it to calculate
-        the moving variables used by Deep-PLS during inference.
-        
-        """
-      
-        conv=inputs[1]
-
-        scale_fact = tf.cast(self.tot_num/tf.shape(inputs[0])[0],dtype=float)
-
-        #self.moving_mean.assign(tf.expand_dims(tf.math.reduce_mean(inputs[0], axis=0),axis=1))
-        #self.moving_var.assign(tf.expand_dims(tf.math.reduce_variance(inputs[0], axis=0),axis=1))
-
-        X=inputs[0]
-        #X=tf.divide(tf.subtract(inputs[0],tf.transpose(self.moving_mean)),tf.transpose(tf.math.sqrt(self.moving_var)+self.epsilon))
-
-        self.moving_conv2.assign(scale_fact*tf.matmul(tf.transpose(conv),conv))
-        self.moving_convX.assign(scale_fact*tf.matmul(tf.transpose(conv),X))  
+    #         """ This function is called the first time the layer is called with data, i.e. when 
+    #         self.i=0. Here, the layer takes the first batch of data, and uses it to calculate
+    #         the moving variables used by Deep-PLS during inference.
             
-        self.run.assign(1)
+    #         """
         
+    #     conv=inputs[1]
+
+    #     scale_fact = tf.cast(self.tot_num/tf.shape(inputs[0])[0],dtype=float)
+
+    #     #self.moving_mean.assign(tf.expand_dims(tf.math.reduce_mean(inputs[0], axis=0),axis=1))
+    #     #self.moving_var.assign(tf.expand_dims(tf.math.reduce_variance(inputs[0], axis=0),axis=1))
+
+    #     X=inputs[0]
+    #     #X=tf.divide(tf.subtract(inputs[0],tf.transpose(self.moving_mean)),tf.transpose(tf.math.sqrt(self.moving_var)+self.epsilon))
+
+    #     self.moving_conv2.assign(scale_fact*tf.matmul(tf.transpose(conv),conv))
+    #     self.moving_convX.assign(scale_fact*tf.matmul(tf.transpose(conv),X))  
+            
+    #     self.run.assign(1)
+    #     self.first_run.assign(False)
+            
    
     def update_moving_variables(self, inputs):
         
@@ -153,9 +152,21 @@ class ConfoundLayer(tf.keras.layers.Layer):
         updates the moving variables using batch-level statistics.
         
         """
+
+        # momentum = self.momentum
+        # with tf.init_scope():
+        #     if self.first_run.value:
+        #         momentum = 0.0
+        #         self.first_run.assign(False)
+
+        #tf.print(self.first_run.value)
    
+        momentum = tf.where(tf.equal(self.run, 1),0.0,self.momentum) 
+
+        #momentum = self.momentum
+
         scale_fact = tf.cast(self.tot_num/tf.shape(inputs[0])[0],dtype=float)
-        momentum = tf.where(tf.cast(self.run, tf.float32)> tf.cast(1, tf.float32), self.momentum, tf.zeros_like(tf.cast(0, tf.float32)))
+        #momentum = tf.where(tf.cast(self.run, tf.float32)> tf.cast(1, tf.float32), self.momentum, tf.zeros_like(tf.cast(0, tf.float32)))
 
         
         #self.moving_mean.assign(self.momentum*self.moving_mean + (tf.constant(1,dtype=float)-self.momentum)*tf.expand_dims(tf.math.reduce_mean(inputs[0], axis=0),axis=1))
@@ -163,8 +174,7 @@ class ConfoundLayer(tf.keras.layers.Layer):
         
         #X=tf.divide(tf.subtract(inputs[0],tf.transpose(self.moving_mean)),tf.transpose(tf.math.sqrt(self.moving_var)+self.epsilon))
 
-        tf.print(momentum)
-
+       
         X=inputs[0]
         conv = inputs[1]
     
@@ -172,7 +182,9 @@ class ConfoundLayer(tf.keras.layers.Layer):
         self.moving_convX.assign(momentum*self.moving_convX + scale_fact*(tf.constant(1,dtype=float)-momentum)*tf.matmul(tf.transpose(conv),X))  
 
         #self.run.assign(1)
-        self.run = self.run+1
+        #self.run.assign(self.run.value+1)
+        self.run.assign_add(1)
+       
         
     
     def get_config(self):

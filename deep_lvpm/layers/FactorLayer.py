@@ -75,8 +75,8 @@ class FactorLayer(tf.keras.layers.Layer):
         # # Additional custom parameters
         self.tot_num = tot_num #kwargs.get("tot_num") ## This is the total number of samples in the full dataset
         self.ndims = ndims #kwargs.get("ndims") ## This is the total number of factors we wish to extract
-        self.run=tf.Variable(run,trainable=False) ## This variable tracks the number of runs we 
-        self.first_run = True
+        self.run=self.add_weight(shape = (), initializer = 'zeros',trainable=False) ## This variable tracks the number of runs we 
+        self.first_run =tf.Variable(True,trainable=False)
        
     def build(self, input_shape):
         
@@ -135,11 +135,13 @@ class FactorLayer(tf.keras.layers.Layer):
         #     self.moving_variables_initial_values(X)
         #     return X
 
-        # if self.first_run:
-        #     self.moving_variables_initial_values(X)
+        # with tf.init_scope():
+        #     if self.first_run.value:
+        #         self.moving_variables_initial_values(X)
+        #         self.first_run.assign(False)
 
 
-        # Replace Python if statement with tf.cond for graph mode compatibility
+        #Replace Python if statement with tf.cond for graph mode compatibility
         # tf.cond(tf.equal(self.run, 0), run_initialization, lambda: X)
 
         if training:
@@ -167,34 +169,39 @@ class FactorLayer(tf.keras.layers.Layer):
    
     
     def moving_variables_initial_values(self, X):
+
+        with tf.init_scope():
        
-        """ This function is called the first time the layer is called with data, i.e. when 
-        self.run=0. Here, the layer takes the first batch of data, and uses it to calculate
-        the moving variables used by DLVPM.
+            """ This function is called the first time the layer is called with data, i.e. when 
+            self.run=0. Here, the layer takes the first batch of data, and uses it to calculate
+            the moving variables used by DLVPM.
 
-        """
-      
-        scale_fact = tf.cast(self.tot_num/tf.shape(X)[0],dtype=float)
+            """
 
-        for i in range(self.ndims): # Here, we loop through weight projection vectors
+            scale_fact = tf.cast(self.tot_num/tf.shape(X)[0],dtype=float)
+
+            for i in range(self.ndims): # Here, we loop through weight projection vectors
+                
+                out_init = tf.matmul(X,self.linear_layer_static[i])
+                self.linear_layer_list[i].assign(tf.divide(self.linear_layer_static[i],tf.norm(out_init)*tf.math.sqrt(scale_fact)))
+                self.linear_layer_static[i].assign(tf.divide(self.linear_layer_static[i],tf.norm(out_init)*tf.math.sqrt(scale_fact)))
+
+            batch_DLV = self.calculate_batch_DLV_static(X) ## Here, we create the DLVPM factors for orthogonalisation, based on weights estimated from the previous batch 
             
-            out_init = tf.matmul(X,self.linear_layer_static[i])
-            self.linear_layer_list[i].assign(tf.divide(self.linear_layer_static[i],tf.norm(out_init)*tf.math.sqrt(scale_fact)))
-            self.linear_layer_static[i].assign(tf.divide(self.linear_layer_static[i],tf.norm(out_init)*tf.math.sqrt(scale_fact)))
+            self.DLV_mean.assign(tf.expand_dims(tf.math.reduce_mean(batch_DLV, axis=0),axis=1))
+            self.DLV_var.assign(tf.expand_dims(tf.math.reduce_variance(batch_DLV, axis=0),axis=1))
 
-        batch_DLV = self.calculate_batch_DLV_static(X) ## Here, we create the DLVPM factors for orthogonalisation, based on weights estimated from the previous batch 
-        
-        self.DLV_mean.assign(tf.expand_dims(tf.math.reduce_mean(batch_DLV, axis=0),axis=1))
-        self.DLV_var.assign(tf.expand_dims(tf.math.reduce_variance(batch_DLV, axis=0),axis=1))
+            batch_DLV_norm = tf.divide(tf.subtract(batch_DLV,tf.transpose(self.DLV_mean)),tf.transpose(tf.math.sqrt(self.DLV_var)+self.epsilon))
 
-        batch_DLV_norm = tf.divide(tf.subtract(batch_DLV,tf.transpose(self.DLV_mean)),tf.transpose(tf.math.sqrt(self.DLV_var)+self.epsilon))
-
-        #ones = tf.ones((tf.shape(batch_DLV_norm)[0], 1))
-        #batch_DLV_norm = tf.concat([ones, batch_DLV_norm], axis=1)
-        
-        self.moving_convX.assign(scale_fact*tf.matmul(tf.transpose(batch_DLV_norm),X))  ## update moving_convX, which is used for orthogonalisation during testing
+            #ones = tf.ones((tf.shape(batch_DLV_norm)[0], 1))
+            #batch_DLV_norm = tf.concat([ones, batch_DLV_norm], axis=1)
             
-        self.run.assign(1)
+            self.moving_convX.assign(scale_fact*tf.matmul(tf.transpose(batch_DLV_norm),X))  ## update moving_convX, which is used for orthogonalisation during testing
+                
+            self.first_run.assign(False)
+            tf.print('run')
+            #self.run.assign(1)
+            self.run.assign_add(1)
 
     def update_moving_variables(self, inputs):
         
@@ -202,9 +209,19 @@ class FactorLayer(tf.keras.layers.Layer):
         updates the moving variables using batch-level statistics.
         
         """
+        # momentum = self.momentum
+        # with tf.init_scope():
+        #     if self.first_run.value:
+        #         momentum = 0.0
+        #         self.first_run.assign(False)
+            
+        
+        #tf.print(self.first_run.value)
+
+        momentum = tf.where(tf.equal(self.run, 1),0.0,self.momentum) ## initialise inputs on first call
    
         scale_fact = tf.cast(self.tot_num/tf.shape(inputs[0])[0],dtype=float)
-        momentum = tf.where(tf.cast(self.run, tf.float32)> tf.cast(1, tf.float32), self.momentum, tf.zeros_like(tf.cast(0, tf.float32)))
+        #momentum = tf.where(tf.cast(self.run, tf.float32)> tf.cast(1, tf.float32), self.momentum, tf.zeros_like(tf.cast(0, tf.float32)))
 
         
         batch_DLV_mean = tf.expand_dims(tf.math.reduce_mean(inputs[1], axis=0),axis=1)
@@ -224,7 +241,9 @@ class FactorLayer(tf.keras.layers.Layer):
         for i in range(self.ndims): # Here, we loop through weight projection vectors 
             self.linear_layer_static[i].assign(self.linear_layer_list[i])
 
-        self.run = self.run+1
+        #self.run.assign(self.run.value+1)
+        self.run.assign_add(1)
+       
         
 
     def orthogonalisation_train(self, inputs):
