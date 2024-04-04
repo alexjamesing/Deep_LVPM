@@ -201,6 +201,11 @@ class StructuralModel(tf.keras.Model):
         
         inputs_nested = self.organize_inputs_by_model(inputs) ## this function organises flat inputs into a list of lists, which makes model training easier
 
+        for vie in range(len(self.model_list)):
+            y_pred = self.model_list[vie](inputs_nested[vie], training=False)
+            tf.print(np.corrcoef(y_pred.numpy().T))
+
+
         ## Iterate through training data-views
         for vie in range(len(self.model_list)):
            
