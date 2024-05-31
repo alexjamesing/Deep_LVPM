@@ -127,7 +127,7 @@ tot_num = x_train.shape[0] # the total number of samples, which is used for inte
 batch_size = 32
 epochs = 20
 
-DLVPM_Model = StructuralModel(Path, model_list, regularizer_list, tot_num, ndims, epochs, batch_size)
+DLVPM_Model = StructuralModel(Path, model_list, regularizer_list, tot_num, ndims)
 
 ~~~
 
@@ -167,11 +167,11 @@ DLVs = DLVPM_Model.predict(data_test_list)
 
 ~~~
 
-This function gives the Deep Latent Variables (DLVs) in the form of a 3-D tensor of size tot_num x len(model_list) x ndims. We can then examine the association between individual latent variables. For example:
+This function gives the Deep Latent Variables (DLVs) in the form of a 3-D tensor of size tot_num x ndims x len(model_list). We can then examine the association between individual latent variables. For example:
 
 ~~~
 
-Cmat1 = np.corrcoef(DLV[:,0,:])
+Cmat1 = np.corrcoef(DLV[:,0,:].T)
 
 ~~~
 
@@ -181,7 +181,7 @@ In contrast, if we calculate associations between different DLVs from the same d
 
 ~~~
 
-Cmat2 = np.corrcoef(DLV[:,:,0])
+Cmat2 = np.corrcoef(DLVs[:,:,0].T)
 
 ~~~
 
@@ -208,6 +208,10 @@ image_DLVs = DLVPM_Model.model_list[0].predict(data_test_list[0])
 If we apply a tsne to these image DLVs, we can see that the DLVPM model has learned a mapping between the image data and the image labels,which means that DLVs naturally segregate image labels in a tnse plot:
 
 ~~~
+
+import numpy as np
+from sklearn.manifold import TSNE
+import matplotlib.pyplot as plt
 
 ## Here, we randomy select 100 examples for plotting
 random_indices = np.random.choice(image_DLVs.shape[0], size=100, replace=False)
@@ -248,8 +252,6 @@ This model also depends on the custom layers `FactorLayer` and `ZCALayer`, these
 - **regularizer_list**: List of regularizers applied to projection layers in each data-view model.
 - **tot_num**: Total number of features across all data batches.
 - **ndims**: Number of orthogonal latent variables to be constructed.
-- **epochs**: Number of training epochs.
-- **batch_size**: Batch size used during training.
 - **orthogonalization (optional)**: Specifies the orthogonalization method ('Moore-Penrose' or 'ZCA'). Defaults to Moore-Penrose.
 - **momentum (optional)**: The momentum defines how quickly global parameters such as means and correlation matrices are updated. Defaults to 0.95
 - **epsilon (optional)**: epsilon is a small constant that is added for numeric stability during batch updates. Defaults to 1e-4.
@@ -357,8 +359,6 @@ model = StructuralModel(
     regularizer_list=[regularizer1, regularizer2, ...],
     tot_num=total_features,
     ndims=number_of_latent_variables,
-    epochs=training_epochs,
-    batch_size=batch_size,
     orthogonalization='Moore-Penrose'
 )
 

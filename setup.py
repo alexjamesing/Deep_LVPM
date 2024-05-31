@@ -11,6 +11,8 @@ setuptools.setup(
     packages=setuptools.find_packages(),
     install_requires=[
         'tensorflow==2.15.0',
-        'pydot'
+        'pydot',
+        'scikit-learn',
+        'matplotlib'
     ]
 )
