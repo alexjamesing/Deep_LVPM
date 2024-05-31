@@ -26,7 +26,6 @@ loss_tracker_mse = tf.keras.metrics.Mean(name="mean_squared_loss")
 corr_tracker = tf.keras.metrics.Mean(name="corr_metric")
 
 
-
 @tf.keras.saving.register_keras_serializable(package="deep_lvpm",name="StructuralModel")
 #@tf.keras.utils.register_keras_serializable(package="deep_lvpm",name="StructuralModel")
 class StructuralModel(tf.keras.Model):
@@ -233,6 +232,7 @@ class StructuralModel(tf.keras.Model):
         
         inputs_nested = self.organize_inputs_by_model(inputs) ## this function organises flat inputs into a list of lists, which makes model training easier
 
+        
         ## Iterate through training data-views
         for vie in range(len(self.model_list)):
            
