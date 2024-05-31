@@ -198,15 +198,6 @@ Cmat1 = np.corrcoef(DLVs[:,0,:].T)
 
 Gives a 2-D matrix of associations between the first of the DLVs, for each data view. Associations are high as the DLVPM algorithm is designed to optimise associations between DLVs constructed from different data types. 
 
-In contrast, if we calculate associations between different DLVs from the same data-types:
-
-~~~
-
-Cmat2 = np.corrcoef(DLVs[:,:,0].T)
-
-~~~
-
-We get associations close to zero i.e. these DLVs are orthogonal.
 
 Once the model has been trained, we can save it for future use using:
 
@@ -226,7 +217,7 @@ image_DLVs = DLVPM_Model.model_list[0].predict(data_test_list[0])
 
 ~~~
 
-If we apply a tsne to these image DLVs, we can see that the DLVPM model has learned a mapping between the image data and the image labels,which means that DLVs naturally segregate image labels in a tnse plot:
+If we apply a tsne to these image DLVs, we can see that the DLVPM model has learned a mapping between the image data and the image labels, which means that DLVs naturally segregate image labels in a tnse plot:
 
 ~~~
 
@@ -253,7 +244,7 @@ for i in range(y_test_plot.shape[1]):
 
 plt.title('t-SNE projection of the dataset')
 plt.legend()
-plt.savefig('/Users/ing/Downloads/figure_out.png')
+plt.savefig('/output_folder/figure_out.png')
 plt.show()
 
 ~~~
