@@ -44,8 +44,6 @@ class StructuralModel(tf.keras.Model):
         regularizer_list (list): A list of regularizers for each model, applied to the projection layer
         tot_num: Total number of features across all batches.
         ndims: Number of orthogonal latent variables to construct.
-        epochs: Number of training epochs.
-        batch_size: Size of the batches used during training.
         orthogonalization: Orthogonalisation procedure ('zca' or 'Moore-Penrose').
         loss_tracker_total: Tracker for the total loss during training.
         corr_tracker: Tracker for the correlation metric during training.
