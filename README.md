@@ -3,16 +3,16 @@
 
 **Deep LVPM**
 
-Deep Latent Variable Path Modelling (DLVPM) is a method for path/structural equation modelling utilising deep neural networks. The aim of the method is to connect different data types together via sets of orthogonal latent variables. 
+Deep Latent Variable Path Modelling (DLVPM) is a method for path/structural equation modelling utilising deep neural networks. The aim of the method is to connect different data types together via sets of orthogonal deep latent variables (DLVs). 
 
 The user must specify a path model defining which data types should be linked by the DLVPM model, along with a neural network model for each data-view, which is then used to optimise associations/linkages between DLVs derived from each data-type.
 
-The implementation of this method is built around a custom keras/tensorflow model called 'StructuralModel', which utilises several custom keras/tensorflow layers for constructing Deep Latent Variables (DLVs) from input data. Using the high-level keras API, we can define new DLVPM models in just a few lines of code. Once a Deep LVPM model is defined, standard keras/tensorflow functions such as model.fit() and model.evaluate() to train  and test DLVPM models. Users who are unfamiliar with keras/tensorflow can find documentation on these projects here: https://www.tensorflow.org/guide/keras
+The implementation of this method is built around a custom keras/tensorflow model called 'StructuralModel', which utilises several custom keras/tensorflow layers for constructing Deep Latent Variables (DLVs) from input data. Using the high-level keras API, we can define new DLVPM models in just a few lines of code. Once a Deep LVPM model is defined, standard keras/tensorflow functions such as model.fit() and model.evaluate() can be used to train  and test DLVPM models. Users who are unfamiliar with keras/tensorflow can find documentation on these projects here: https://www.tensorflow.org/guide/keras
 
 
 **Installation**
 
-Tensorflow 2.16 represented a very heavy refactor to accomodate the update from keras 2 to keras 3. We are currently working to update the package so it is compatible with Tensorflow > version 2.15. At present, we recommend using tensorflow 2.15, which is compatible with python 3.11.
+Tensorflow 2.16 represented a very heavy refactor to accomodate the update from keras 2 to keras 3. We are currently working to update the package so it is compatible with Tensorflow > version 2.15. At present, we recommend using tensorflow 2.15, which is compatible with python 3.11 (this version of tensorflow will be installed automatically with Deep_LVPM).
 
 You can create a new conda environment using python 3.11 using:
 
@@ -203,7 +203,7 @@ Once the model has been trained, we can save it for future use using:
 
 ~~~
 
-DLVPM_Model.save('output_folder/DLVPM_Model.keras')
+DLVPM_Model.save('/output_folder/DLVPM_Model.keras')
 
 ~~~
 
