@@ -14,7 +14,7 @@ The implementation of this method is built around a custom keras/tensorflow mode
 
 Tensorflow 2.16 represented a very heavy refactor to accomodate the update from keras 2 to keras 3. We are currently working to update the package so it is compatible with Tensorflow > version 2.15. At present, we recommend using tensorflow 2.15, which is compatible with python 3.11 (this version of tensorflow will be installed automatically with Deep_LVPM).
 
-You can create a new conda environment using python 3.11 using:
+You can create a new conda environment utilizing python 3.11 with:
 
 ~~~
 
