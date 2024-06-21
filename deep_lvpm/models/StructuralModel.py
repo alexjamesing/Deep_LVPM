@@ -143,12 +143,8 @@ class StructuralModel(tf.keras.Model):
 
         inputs_nested = self.organize_inputs_by_model(inputs) ## this function organises flat inputs into a list of lists, which makes model training easier
 
-        out=tf.stack([self.model_list[vie](inputs_nested[vie]) for vie in range(len(self.model_list))],axis=2) 
-        
-        # scale_fact = tf.cast(self.tot_num/tf.shape(out)[0],dtype=float) #
-        # out = tf.divide(out,tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(out),axis=0))))  ## re-normlise latent factors, very important!
-        
-        
+        out=tf.stack([self.model_list[vie](inputs_nested[vie]) for vie in range(len(self.model_list))],axis=2) ## Stack the outputs 
+    
         return out
     
     def organize_inputs_by_model(self, data_inputs):
@@ -188,11 +184,13 @@ class StructuralModel(tf.keras.Model):
         inputs=inputs[0]
         
         # Here, we run the current data-iteration through the global model in a forward 
-        # pass. We do this so that we can re-normalise the weights. 
-        is_training = False
-        #
-        y = self(inputs, training=is_training)  ## forward pass
+        y = self(inputs, training=False)  ## forward pass
+
+        ## Here, we re-normalise the model weights
         scale_fact = tf.cast(self.tot_num/tf.shape(y)[0],dtype=float) # scale factor for re-scaling
+        for vie in range(len(self.model_list)):
+            y_view = tf.squeeze(y[:,:,vie]) ## This is the current view under analysis
+            self.model_list[vie].layers[-1].weight_normalizer(y_view, scale_fact)
         y = tf.divide(y,tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(y),axis=0)))) ## Here, we re-normalize DLVs
 
         total_loss = [None]*(len(self.model_list))
@@ -340,7 +338,7 @@ class StructuralModel(tf.keras.Model):
         
         """ This function returns the mean correlation between the latent factors
         in a data-view, and the latent factors to which that data-view is connected 
-        via the global PLS model.
+        via the global DLVPM model.
         
         """
       
