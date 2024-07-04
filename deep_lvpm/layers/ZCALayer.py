@@ -105,11 +105,6 @@ class ZCALayer(tf.keras.layers.Layer):
         
         self.project_static = self.add_weight(name = 'projection_weight_', shape = [input_shape[1],self.ndims], initializer=tf.keras.initializers.RandomNormal(mean=0., stddev=1.), regularizer=self.kernel_regularizer, trainable=False)
           
-        
-        # ## self.moving_mean and self.moving_std are used to z-normalise the data-inputs to this, last layer, of the neural network, used in the testing/prediction phase only
-        # self.moving_mean = self.add_weight(name = 'moving_mean', shape = [input_shape[1],1], initializer='zeros', trainable=False) ## inputs are normalised using: inputs - self.moving_mean
-        # self.moving_var = self.add_weight(name = 'moving_std', shape = [input_shape[1],1], initializer='ones', trainable=False) ## inputs are
-        
         ## self.c_mat_mean and self.c_mat_std are used to z-normalise Deep-PLS factors during the orthognalisation process, used in the testing/prediction phase only
         self.DLV_mean = self.add_weight(name = 'DLV_moving_mean', shape = [self.ndims,1], initializer='zeros', trainable=False) 
         self.DLV_var = self.add_weight(name = 'DLV_moving_std', shape = [self.ndims,1], initializer='ones', trainable=False) 
@@ -127,79 +122,68 @@ class ZCALayer(tf.keras.layers.Layer):
         function performs differently during training and testing.
         
         """
-      
-        #tf.cond(self.i==0,true_fn=self.init_first_batch(inputs),false_fn=None)
-        #if self.run==0:
-        #    self.moving_variables_initial_values(inputs)
-        
-        X = self.batch_norm1(inputs, training=training)
 
-        def run_initialization():
-            self.moving_variables_initial_values(X)
-            return X
-        
-        tf.cond(tf.equal(self.run, 0), run_initialization, lambda: X)
-         
+        X = self.batch_norm1(inputs, training=training)
+    
         if training:
             
             ## The algorithm runs differently in training and testing modes. In the training mode,
             ## normalisation and orthogonalisation are carried out using batch-level statistics
-            
-            #X = tf.divide(tf.subtract(inputs, tf.math.reduce_mean(inputs, axis=0)),tf.math.reduce_std(inputs, axis=0)+self.epsilon) 
-            
+        
             self.project_static.assign(self.project)
            
             self.update_moving_variables(X)
         
             out = tf.matmul(X,self.project)
 
-            #out_stat = tf.matmul(X,self.project_static)
-
-            #sqrt_inv_out = tf.linalg.sqrtm(tf.linalg.inv(tf.matmul(tf.transpose(out_stat),out_stat)))
-
-            #sqrt_inv_out = tf.linalg.sqrtm(tf.linalg.inv(tf.matmul(tf.transpose(out),out)+self.diag_offset*tf.eye(self.moving_conv2.shape[0])))
-            #out = tf.matmul(out,sqrt_inv_out)
-
-
-            #X = tf.divide(tf.subtract(inputs, (tf.transpose(self.moving_mean)+self.epsilon)),(tf.transpose(tf.math.sqrt(self.moving_var))+self.epsilon))
-
-
         else:
 
             out = tf.matmul(X,self.project)
 
-            sqrt_inv_out = tf.linalg.sqrtm(tf.linalg.inv(tf.matmul(tf.transpose(out),out)+self.diag_offset*tf.eye(self.moving_conv2.shape[0])))
-            out = tf.matmul(out,sqrt_inv_out)
-            
         return out
  
     
-    def moving_variables_initial_values(self, X):
+    # def moving_variables_initial_values(self, X):
        
-       """ This function is called the first time the layer is called with data, i.e. when 
-       self.count=1. Here, the layer takes the first batch of data, and uses it to calculate
-       the moving variables used by Deep-PLS during inference.
+    #    """ This function is called the first time the layer is called with data, i.e. when 
+    #    self.count=1. Here, the layer takes the first batch of data, and uses it to calculate
+    #    the moving variables used by Deep-PLS during inference.
        
-       """
+    #    """
       
-       scale_fact = tf.cast(self.tot_num/tf.shape(X)[0],dtype=float)
+    #    scale_fact = tf.cast(self.tot_num/tf.shape(X)[0],dtype=float)
      
-    #    self.moving_mean.assign(tf.expand_dims(tf.math.reduce_mean(inputs, axis=0),axis=1))
-    #    self.moving_var.assign(tf.expand_dims(tf.math.reduce_variance(inputs, axis=0),axis=1))
+    # #    self.moving_mean.assign(tf.expand_dims(tf.math.reduce_mean(inputs, axis=0),axis=1))
+    # #    self.moving_var.assign(tf.expand_dims(tf.math.reduce_variance(inputs, axis=0),axis=1))
        
-    #    X=tf.divide(tf.subtract(inputs,tf.transpose(self.moving_mean)),tf.transpose(tf.math.sqrt(self.moving_var)))
+    # #    X=tf.divide(tf.subtract(inputs,tf.transpose(self.moving_mean)),tf.transpose(tf.math.sqrt(self.moving_var)))
        
-       out_init = tf.matmul(X, self.project)
+    #    out_init = tf.matmul(X, self.project)
        
-       out_init_norm = tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(out_init),axis=0)))
+    #    out_init_norm = tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(out_init),axis=0)))
        
-       self.project.assign(tf.divide(self.project,out_init_norm))
+    #    self.project.assign(tf.divide(self.project,out_init_norm))
        
-       out_init = tf.divide(out_init,out_init_norm)
+    #    out_init = tf.divide(out_init,out_init_norm)
        
-       self.moving_conv2.assign(scale_fact*(tf.matmul(tf.transpose(out_init),out_init)))
+    #    self.moving_conv2.assign(scale_fact*(tf.matmul(tf.transpose(out_init),out_init)))
         
-       self.run.assign(1)
+    #    self.run.assign(1)
+
+    def weight_normalizer(self, inputs):
+
+        """ The purpose of this function is to re-normalize weights weight vectors. This 
+        prevents a collapse to a trivial solution. The inputs here are DLVs for this data view. 
+        
+        """
+
+        y = inputs[0]
+        scale_fact = inputs[1]
+
+        denom = tf.where(tf.equal(self.run, 0),tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(y),axis=0))),1.0)
+
+        self.project.assign(tf.divide(self.project,denom))
+
    
     def update_moving_variables(self, X):
         
@@ -209,11 +193,6 @@ class ZCALayer(tf.keras.layers.Layer):
         """
    
         scale_fact = tf.cast(self.tot_num/tf.shape(X)[0],dtype=float)
-        
-        #self.moving_mean.assign(self.momentum*self.moving_mean + (tf.constant(1,dtype=float)-self.momentum)*tf.expand_dims(tf.math.reduce_mean(inputs, axis=0),axis=1))
-        #self.moving_var.assign(self.momentum*self.moving_var + (tf.constant(1,dtype=float)-self.momentum)*tf.expand_dims(tf.math.reduce_variance(inputs, axis=0),axis=1))
-        
-        #X=tf.divide(tf.subtract(X,tf.transpose(self.moving_mean)),tf.transpose(tf.math.sqrt(self.moving_var)))
         
         out_stat = tf.matmul(X, self.project)
         

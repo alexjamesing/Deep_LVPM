@@ -130,19 +130,6 @@ class FactorLayer(tf.keras.layers.Layer):
         """
 
         X = self.batch_norm1(inputs, training=training)
-        
-        # def run_initialization():
-        #     self.moving_variables_initial_values(X)
-        #     return X
-
-        # with tf.init_scope():
-        #     if self.first_run.value:
-        #         self.moving_variables_initial_values(X)
-        #         self.first_run.assign(False)
-
-
-        #Replace Python if statement with tf.cond for graph mode compatibility
-        # tf.cond(tf.equal(self.run, 0), run_initialization, lambda: X)
 
         if training:
             
@@ -150,20 +137,15 @@ class FactorLayer(tf.keras.layers.Layer):
             ## normalisation and orthogonalisation are carried out using batch-level statistics
 
             DLV_all = self.calculate_batch_DLV_static(X)
-            out = self.calculate_batch_DLV_train(X, DLV_all) 
-            
-            self.update_moving_variables([X, DLV_all])
 
-            #print(np.corrcoef(tf.transpose(out).numpy()))
+            out = self.calculate_batch_DLV_train(X, DLV_all) 
+
+            self.update_moving_variables([X, DLV_all])
+            
         
         else:
             
             out = self.calculate_DLV_test(X) ## Here, we calculate DLVs during testing, using population level statistics
-
-            #tf.print(np.corrcoef(tf.transpose(out).numpy()))
-            #print(tf.norm(out,axis=0))
-
-    
 
         return out
    
@@ -210,14 +192,15 @@ class FactorLayer(tf.keras.layers.Layer):
         
         """
 
-        out_init = inputs[0]
+        y = inputs[0]
         scale_fact = inputs[1]
 
         for i in range(self.ndims): # Here, we loop through weight projection vectors
             
-            out_init = tf.matmul(inputs,self.linear_layer_static[i])
-            self.linear_layer_list[i].assign(tf.divide(self.linear_layer_static[i],tf.norm(out_init)*tf.math.sqrt(scale_fact)))
-            self.linear_layer_static[i].assign(tf.divide(self.linear_layer_static[i],tf.norm(out_init)*tf.math.sqrt(scale_fact)))
+            denom = tf.where(tf.equal(self.run, 0),tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(y[:,i]),axis=0))),1.0)
+            
+            self.linear_layer_list[i].assign(tf.divide(self.linear_layer_list[i],denom))
+            self.linear_layer_static[i].assign(tf.divide(self.linear_layer_list[i],denom))
 
 
     def update_moving_variables(self, inputs):
@@ -226,21 +209,10 @@ class FactorLayer(tf.keras.layers.Layer):
         updates the moving variables using batch-level statistics.
         
         """
-        # momentum = self.momentum
-        # with tf.init_scope():
-        #     if self.first_run.value:
-        #         momentum = 0.0
-        #         self.first_run.assign(False)
-            
-        
-        #tf.print(self.first_run.value)
 
-        momentum = tf.where(tf.equal(self.run, 1),0.0,self.momentum) ## initialise inputs on first call
-   
+        momentum = tf.where(tf.equal(self.run, 0), 0.0, self.momentum) ## initialise inputs on first call
         scale_fact = tf.cast(self.tot_num/tf.shape(inputs[0])[0],dtype=float)
-        #momentum = tf.where(tf.cast(self.run, tf.float32)> tf.cast(1, tf.float32), self.momentum, tf.zeros_like(tf.cast(0, tf.float32)))
 
-        
         batch_DLV_mean = tf.expand_dims(tf.math.reduce_mean(inputs[1], axis=0),axis=1)
         batch_DLV_var = tf.expand_dims(tf.math.reduce_variance(inputs[1], axis=0),axis=1)
 
@@ -248,18 +220,13 @@ class FactorLayer(tf.keras.layers.Layer):
         self.DLV_var.assign(momentum*self.DLV_var + (tf.constant(1,dtype=float)-momentum)*batch_DLV_var)
 
         batch_DLV_norm = tf.divide(tf.subtract(inputs[1],tf.transpose(batch_DLV_mean)),tf.transpose(tf.math.sqrt(batch_DLV_var)))
-        #batch_DLV_norm = tf.divide(tf.subtract(inputs[1],tf.transpose(self.DLV_mean)),tf.transpose(tf.math.sqrt(self.DLV_var)+self.epsilon))
-
-        #ones = tf.ones((tf.shape(batch_DLV_norm)[0], 1))
-        #batch_DLV_norm = tf.concat([ones, batch_DLV_norm], axis=1)
 
         self.moving_convX.assign(momentum*self.moving_convX + scale_fact*(tf.constant(1,dtype=float)-momentum)*tf.matmul(tf.transpose(batch_DLV_norm),inputs[0]))
         
         for i in range(self.ndims): # Here, we loop through weight projection vectors 
             self.linear_layer_static[i].assign(self.linear_layer_list[i])
 
-        #self.run.assign(self.run.value+1)
-        self.run.assign_add(1)
+        self.run.assign(1)
        
         
 
