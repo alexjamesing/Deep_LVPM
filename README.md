@@ -1,24 +1,45 @@
 
 ![Alt text](dlvpm_logo_final.png)
 
-**Installation**
-
-We recommend installing Deep LVPM using pip:
-
-~~~
-
-pip Deep_LVPM
-
-~~~
-
-
 **Deep LVPM**
 
-Deep Latent Variable Path Modelling (DLVPM) is a method for path/structural equation modelling utilising deep neural networks. The aim of the method is to connect different data types together via sets of orthogonal latent variables. 
+Deep Latent Variable Path Modelling (DLVPM) is a method for path/structural equation modelling utilising deep neural networks. The aim of the method is to connect different data types together via sets of orthogonal deep latent variables (DLVs). 
 
 The user must specify a path model defining which data types should be linked by the DLVPM model, along with a neural network model for each data-view, which is then used to optimise associations/linkages between DLVs derived from each data-type.
 
-The implementation of this method is built around a custom keras/tensorflow model called 'StructuralModel', which utilises several custom keras/tensorflow layers for constructing Deep Latent Variables (DLVs) from input data. Using the high-level keras API, we can define new DLVPM models in just a few lines of code. Once a Deep LVPM model is defined, standard keras/tensorflow functions such as model.fit() and model.evaluate() to train  and test DLVPM models. Users who are unfamiliar with keras/tensorflow can find documentation on these projects here: https://www.tensorflow.org/guide/keras
+The implementation of this method is built around a custom keras/tensorflow model called 'StructuralModel', which utilises several custom keras/tensorflow layers for constructing Deep Latent Variables (DLVs) from input data. Using the high-level keras API, we can define new DLVPM models in just a few lines of code. Once a Deep LVPM model is defined, standard keras/tensorflow functions such as model.fit() and model.evaluate() can be used to train  and test DLVPM models. Users who are unfamiliar with keras/tensorflow can find documentation on these projects here: https://www.tensorflow.org/guide/keras
+
+
+**Installation**
+
+Tensorflow 2.16 represented a very heavy refactor to accomodate the update from keras 2 to keras 3. We are currently working to update the package so it is compatible with Tensorflow > version 2.15. At present, we recommend using tensorflow 2.15, which is compatible with python 3.11 (this version of tensorflow will be installed automatically with Deep_LVPM).
+
+You can create a new conda environment utilizing python 3.11 with:
+
+~~~
+
+conda create -n myenv python=3.11
+
+~~~
+
+Activate the environment:
+
+
+~~~
+
+conda activate myenv
+
+~~~
+
+Then, you can download and install this package using the following command (requires Git):
+
+
+~~~
+
+pip install git+https://github.com/alexjamesing/Deep_LVPM.git
+
+~~~
+
 
 **Example Application**
 
@@ -127,7 +148,7 @@ tot_num = x_train.shape[0] # the total number of samples, which is used for inte
 batch_size = 32
 epochs = 20
 
-DLVPM_Model = StructuralModel(Path, model_list, regularizer_list, tot_num, ndims, epochs, batch_size)
+DLVPM_Model = StructuralModel(Path, model_list, regularizer_list, tot_num, ndims)
 
 ~~~
 
@@ -167,31 +188,22 @@ DLVs = DLVPM_Model.predict(data_test_list)
 
 ~~~
 
-This function gives the Deep Latent Variables (DLVs) in the form of a 3-D tensor of size tot_num x len(model_list) x ndims. We can then examine the association between individual latent variables. For example:
+This function gives the Deep Latent Variables (DLVs) in the form of a 3-D tensor of size tot_num x ndims x len(model_list). We can then examine the association between individual latent variables. For example:
 
 ~~~
 
-Cmat1 = np.corrcoef(DLV[:,0,:])
+Cmat1 = np.corrcoef(DLVs[:,0,:].T)
 
 ~~~
 
 Gives a 2-D matrix of associations between the first of the DLVs, for each data view. Associations are high as the DLVPM algorithm is designed to optimise associations between DLVs constructed from different data types. 
 
-In contrast, if we calculate associations between different DLVs from the same data-types:
-
-~~~
-
-Cmat2 = np.corrcoef(DLV[:,:,0])
-
-~~~
-
-We get associations close to zero i.e. these DLVs are orthogonal.
 
 Once the model has been trained, we can save it for future use using:
 
 ~~~
 
-DLVPM_Model.save('output_folder/DLVPM_Model.keras')
+DLVPM_Model.save('/output_folder/DLVPM_Model.keras')
 
 ~~~
 
@@ -205,9 +217,13 @@ image_DLVs = DLVPM_Model.model_list[0].predict(data_test_list[0])
 
 ~~~
 
-If we apply a tsne to these image DLVs, we can see that the DLVPM model has learned a mapping between the image data and the image labels,which means that DLVs naturally segregate image labels in a tnse plot:
+If we apply a tsne to these image DLVs, we can see that the DLVPM model has learned a mapping between the image data and the image labels, which means that DLVs naturally segregate image labels in a tnse plot:
 
 ~~~
+
+import numpy as np
+from sklearn.manifold import TSNE
+import matplotlib.pyplot as plt
 
 ## Here, we randomy select 100 examples for plotting
 random_indices = np.random.choice(image_DLVs.shape[0], size=100, replace=False)
@@ -228,7 +244,7 @@ for i in range(y_test_plot.shape[1]):
 
 plt.title('t-SNE projection of the dataset')
 plt.legend()
-plt.savefig('/Users/ing/Downloads/figure_out.png')
+plt.savefig('/output_folder/figure_out.png')
 plt.show()
 
 ~~~
@@ -248,8 +264,6 @@ This model also depends on the custom layers `FactorLayer` and `ZCALayer`, these
 - **regularizer_list**: List of regularizers applied to projection layers in each data-view model.
 - **tot_num**: Total number of features across all data batches.
 - **ndims**: Number of orthogonal latent variables to be constructed.
-- **epochs**: Number of training epochs.
-- **batch_size**: Batch size used during training.
 - **orthogonalization (optional)**: Specifies the orthogonalization method ('Moore-Penrose' or 'ZCA'). Defaults to Moore-Penrose.
 - **momentum (optional)**: The momentum defines how quickly global parameters such as means and correlation matrices are updated. Defaults to 0.95
 - **epsilon (optional)**: epsilon is a small constant that is added for numeric stability during batch updates. Defaults to 1e-4.
@@ -357,8 +371,6 @@ model = StructuralModel(
     regularizer_list=[regularizer1, regularizer2, ...],
     tot_num=total_features,
     ndims=number_of_latent_variables,
-    epochs=training_epochs,
-    batch_size=batch_size,
     orthogonalization='Moore-Penrose'
 )
 
