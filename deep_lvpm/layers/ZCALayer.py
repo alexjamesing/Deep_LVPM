@@ -51,7 +51,7 @@ class ZCALayer(tf.keras.layers.Layer):
     tot_num: This is the total number of samples that training is carried out over. 
     This value is used to ensure that covariance matrices are optimally scaled.
     
-    ndims: parameter that defines the number of Deep-PLS factor dimensions 
+    ndims: parameter that defines the number of DLVPM factor dimensions 
     we wish to extract
     
     
@@ -94,7 +94,7 @@ class ZCALayer(tf.keras.layers.Layer):
 
     def build(self, input_shape):
         
-        """ In this function, the model builds and assigns values to the weights used in the Deep-PLS analysis.
+        """ In this function, the model builds and assigns values to the weights used in the DLVPM analysis.
         The function builds the list of projection vectors used to map associations between different data-views. 
         The function also builds the moving mean and moving standard deviation used to normalise the input data.
         """
@@ -103,15 +103,11 @@ class ZCALayer(tf.keras.layers.Layer):
         ## self.project is the weight projection layer, trained to project variables into a space where they are optimally correlated
         self.project = self.add_weight(name = 'projection_weight_', shape = [input_shape[1],self.ndims], initializer=tf.keras.initializers.RandomNormal(mean=0., stddev=1.), regularizer=self.kernel_regularizer, trainable=True)
         
-        self.project_static = self.add_weight(name = 'projection_weight_', shape = [input_shape[1],self.ndims], initializer=tf.keras.initializers.RandomNormal(mean=0., stddev=1.), regularizer=self.kernel_regularizer, trainable=False)
-          
-        ## self.c_mat_mean and self.c_mat_std are used to z-normalise Deep-PLS factors during the orthognalisation process, used in the testing/prediction phase only
-        self.DLV_mean = self.add_weight(name = 'DLV_moving_mean', shape = [self.ndims,1], initializer='zeros', trainable=False) 
-        self.DLV_var = self.add_weight(name = 'DLV_moving_std', shape = [self.ndims,1], initializer='ones', trainable=False) 
-        
-        ## self.moving_conv2 and self.moving_convX are covaraince matrices used in the orthonalisation process. These matrices are only used in the testing/prediction phase. self.moving_conv2 is a covaraince matrix expressing the covariances between Deep-PLS factors, elf.moving_convX is a covariance matrix expressing the covariances between Deep-PLS factors and the last layer of the neural network
+       # self.project_static = self.add_weight(name = 'projection_weight_', shape = [input_shape[1],self.ndims], initializer=tf.keras.initializers.RandomNormal(mean=0., stddev=1.), regularizer=self.kernel_regularizer, trainable=False)
+      
+        ## self.moving_conv2 and self.moving_convX are covaraince matrices used in the orthonalisation process. These matrices are only used in the testing/prediction phase. self.moving_conv2 is a covaraince matrix expressing the covariances between DLVPM factors, elf.moving_convX is a covariance matrix expressing the covariances between DLVPM factors and the last layer of the neural network
         self.moving_conv2 = self.add_weight(name = 'moving_conv2', shape=[self.ndims, self.ndims], initializer='zeros', trainable=False)
-        self.moving_conv2.assign(tf.eye(num_rows=self.ndims)) ## this variable is initialised under the assumption that Deep-PLS factors are uncorrelated with one another
+        self.moving_conv2.assign(tf.eye(num_rows=self.ndims)) ## this variable is initialised under the assumption that DLVPM factors are uncorrelated with one another
 
          
     @tf.function
@@ -130,7 +126,7 @@ class ZCALayer(tf.keras.layers.Layer):
             ## The algorithm runs differently in training and testing modes. In the training mode,
             ## normalisation and orthogonalisation are carried out using batch-level statistics
         
-            self.project_static.assign(self.project)
+            #self.project_static.assign(self.project)
            
             self.update_moving_variables(X)
         
@@ -142,33 +138,6 @@ class ZCALayer(tf.keras.layers.Layer):
 
         return out
  
-    
-    # def moving_variables_initial_values(self, X):
-       
-    #    """ This function is called the first time the layer is called with data, i.e. when 
-    #    self.count=1. Here, the layer takes the first batch of data, and uses it to calculate
-    #    the moving variables used by Deep-PLS during inference.
-       
-    #    """
-      
-    #    scale_fact = tf.cast(self.tot_num/tf.shape(X)[0],dtype=float)
-     
-    # #    self.moving_mean.assign(tf.expand_dims(tf.math.reduce_mean(inputs, axis=0),axis=1))
-    # #    self.moving_var.assign(tf.expand_dims(tf.math.reduce_variance(inputs, axis=0),axis=1))
-       
-    # #    X=tf.divide(tf.subtract(inputs,tf.transpose(self.moving_mean)),tf.transpose(tf.math.sqrt(self.moving_var)))
-       
-    #    out_init = tf.matmul(X, self.project)
-       
-    #    out_init_norm = tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(out_init),axis=0)))
-       
-    #    self.project.assign(tf.divide(self.project,out_init_norm))
-       
-    #    out_init = tf.divide(out_init,out_init_norm)
-       
-    #    self.moving_conv2.assign(scale_fact*(tf.matmul(tf.transpose(out_init),out_init)))
-        
-    #    self.run.assign(1)
 
     def weight_normalizer(self, inputs):
 
@@ -180,24 +149,32 @@ class ZCALayer(tf.keras.layers.Layer):
         y = inputs[0]
         scale_fact = inputs[1]
 
-        denom = tf.where(tf.equal(self.run, 0),tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(y),axis=0))),1.0)
+        sqrt_inv_y =tf.where(tf.equal(self.run, 0),tf.linalg.sqrtm(tf.linalg.inv(tf.matmul(tf.transpose(y),y))), tf.linalg.sqrtm(tf.linalg.inv(self.moving_conv2+self.diag_offset*tf.eye(self.moving_conv2.shape[0]))))
+        out_y = tf.matmul(tf.squeeze(y),sqrt_inv_y) ## Here, we normalize the output DLVs
 
-        self.project.assign(tf.divide(self.project,denom))
+        denom = tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(y),axis=0)))
+        self.project.assign(tf.divide(self.project,denom)) ## Here, we normalize the DLVPM weights
 
-   
+        return out_y
+
+
+
     def update_moving_variables(self, X):
         
         """ This function is called for every batch the model sees during training. This function
         updates the moving variables using batch-level statistics.
         
         """
+
+        momentum = tf.where(tf.equal(self.run, 0), 0.0, self.momentum) ## initialise inputs on first call
    
         scale_fact = tf.cast(self.tot_num/tf.shape(X)[0],dtype=float)
-        
-        out_stat = tf.matmul(X, self.project)
-        
-        self.moving_conv2.assign(self.momentum*self.moving_conv2 + scale_fact*(tf.constant(1,dtype=float)-self.momentum)*(tf.matmul(tf.transpose(out_stat),out_stat)))
+
+        DLVs = tf.matmul(X, self.project)
+
+        self.moving_conv2.assign(self.momentum*self.moving_conv2 + scale_fact*(tf.constant(1,dtype=float)-self.momentum)*(tf.matmul(tf.transpose(DLVs),DLVs)))
        
+        self.run.assign(1)
         
     def get_config(self):
         """

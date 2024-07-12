@@ -60,7 +60,7 @@ class FactorLayer(tf.keras.layers.Layer):
             epsilon (float, optional): Small constant added to variance to avoid dividing by zero in the batch normalization step. Defaults to 1e-6.
             momentum (float, optional): Momentum for the moving average and moving variance in the batch normalization step. Defaults to 0.95.
             tot_num (int, optional): Total number of samples used for training. Used for optimal scaling of covariance matrices.
-            ndims (int, optional): Number of Deep-PLS factor dimensions to extract.
+            ndims (int, optional): Number of DLVPM factor dimensions to extract.
             run (int, optional): Initial value for the run tracker. Defaults to 0.
             **kwargs: Additional keyword arguments inherited from tf.keras.layers.Layer.
         """
@@ -76,7 +76,7 @@ class FactorLayer(tf.keras.layers.Layer):
         self.tot_num = tot_num #kwargs.get("tot_num") ## This is the total number of samples in the full dataset
         self.ndims = ndims #kwargs.get("ndims") ## This is the total number of factors we wish to extract
         self.run=self.add_weight(shape = (), initializer = 'zeros',trainable=False) ## This variable tracks the number of runs we 
-        self.first_run =tf.Variable(True,trainable=False)
+        #self.first_run =tf.Variable(True,trainable=False)
        
     def build(self, input_shape):
         
@@ -93,7 +93,7 @@ class FactorLayer(tf.keras.layers.Layer):
         self.linear_layer_list = [None]*self.ndims ## A list of projection layers
         self.linear_layer_static = [None]*self.ndims ## A list containing projection layer weights which are assigned as non-trainable
         
-        ## This loop creates n=tot_num projection layers, which are used to construct Deep-PLS factors 
+        ## This loop creates n=tot_num projection layers, which are used to construct DLVPM factors 
         for i in range(self.ndims):
             linear_layer = self.add_weight(name = 'projection_weight_' + str(i), shape = [input_shape[1],1], initializer=tf.keras.initializers.RandomNormal(mean=0., stddev=1.), regularizer=self.kernel_regularizer, trainable=True)
             self.linear_layer_list[i]=linear_layer
@@ -149,42 +149,7 @@ class FactorLayer(tf.keras.layers.Layer):
 
         return out
    
-    
-    # def moving_variables_initial_values(self, X):
-
-    #     with tf.init_scope():
-       
-    #         """ This function is called the first time the layer is called with data, i.e. when 
-    #         self.run=0. Here, the layer takes the first batch of data, and uses it to calculate
-    #         the moving variables used by DLVPM.
-
-    #         """
-
-    #         scale_fact = tf.cast(self.tot_num/tf.shape(X)[0],dtype=float)
-
-    #         for i in range(self.ndims): # Here, we loop through weight projection vectors
-                
-    #             out_init = tf.matmul(X,self.linear_layer_static[i])
-    #             self.linear_layer_list[i].assign(tf.divide(self.linear_layer_static[i],tf.norm(out_init)*tf.math.sqrt(scale_fact)))
-    #             self.linear_layer_static[i].assign(tf.divide(self.linear_layer_static[i],tf.norm(out_init)*tf.math.sqrt(scale_fact)))
-
-    #         batch_DLV = self.calculate_batch_DLV_static(X) ## Here, we create the DLVPM factors for orthogonalisation, based on weights estimated from the previous batch 
-            
-    #         self.DLV_mean.assign(tf.expand_dims(tf.math.reduce_mean(batch_DLV, axis=0),axis=1))
-    #         self.DLV_var.assign(tf.expand_dims(tf.math.reduce_variance(batch_DLV, axis=0),axis=1))
-
-    #         batch_DLV_norm = tf.divide(tf.subtract(batch_DLV,tf.transpose(self.DLV_mean)),tf.transpose(tf.math.sqrt(self.DLV_var)+self.epsilon))
-
-    #         #ones = tf.ones((tf.shape(batch_DLV_norm)[0], 1))
-    #         #batch_DLV_norm = tf.concat([ones, batch_DLV_norm], axis=1)
-            
-    #         self.moving_convX.assign(scale_fact*tf.matmul(tf.transpose(batch_DLV_norm),X))  ## update moving_convX, which is used for orthogonalisation during testing
-                
-    #         self.first_run.assign(False)
-    #         tf.print('run')
-    #         #self.run.assign(1)
-    #         self.run.assign_add(1)
-
+   
     def weight_normalizer(self, inputs):
 
         """ The purpose of this function is to re-normalize weights weight vectors. This 
@@ -197,10 +162,15 @@ class FactorLayer(tf.keras.layers.Layer):
 
         for i in range(self.ndims): # Here, we loop through weight projection vectors
             
-            denom = tf.where(tf.equal(self.run, 0),tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(y[:,i]),axis=0))),1.0)
-            
+            denom = tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(y[:,i]))))
+
             self.linear_layer_list[i].assign(tf.divide(self.linear_layer_list[i],denom))
-            self.linear_layer_static[i].assign(tf.divide(self.linear_layer_list[i],denom))
+            self.linear_layer_static[i].assign(tf.divide(self.linear_layer_static[i],denom))
+
+        y_denom = tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(y),axis=0)))
+        out_y = tf.divide(y, y_denom)
+
+        return out_y
 
 
     def update_moving_variables(self, inputs):
@@ -240,9 +210,6 @@ class FactorLayer(tf.keras.layers.Layer):
         #X = tf.divide(tf.subtract(inputs[0], tf.math.reduce_mean(inputs[0], axis=0)),tf.math.reduce_std(inputs[0], axis=0)+self.epsilon) 
         DLV_batch = tf.divide(tf.subtract(inputs[1], tf.math.reduce_mean(inputs[1], axis=0)),tf.math.reduce_std(inputs[1], axis=0)+self.epsilon) ## Here, we z-normalise the input features to have mean of zero and standard deviation of one 
         
-        #ones = tf.ones((tf.shape(DLV_batch)[0], 1))
-        #DLV_batch = tf.concat([ones, DLV_batch], axis=1)
-        
         denom = tf.cast(tf.shape(inputs[0])[0],dtype=float)
         beta = tf.matmul(tf.transpose(DLV_batch),inputs[0])/denom
         ortho_output = tf.subtract(inputs[0],tf.matmul(DLV_batch, beta)) ## This is the input matrix, orthogonalised with respect to previous DLVs
@@ -260,8 +227,10 @@ class FactorLayer(tf.keras.layers.Layer):
 
         DLV_norm = tf.divide(tf.subtract(inputs[1],tf.transpose(self.DLV_mean[:i,:])),(tf.transpose(tf.math.sqrt(self.DLV_var)[:i,:])+self.epsilon))
 
-        denom= self.tot_num
+        denom = self.tot_num
         beta = self.moving_convX[:i,:]/denom
+        #beta = self.moving_convX[:i,:]
+
         ortho_output = tf.subtract(inputs[0],tf.matmul(DLV_norm, beta))
 
         return ortho_output 

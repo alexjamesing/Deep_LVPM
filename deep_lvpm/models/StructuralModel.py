@@ -130,12 +130,13 @@ class StructuralModel(tf.keras.Model):
         return model
 
     
-    def call(self,inputs):
+    def call(self, inputs, training=False):
         """
         Run data through each of the measurement sub-models.
 
         Args:
             inputs (list): A list of inputs for each data-view.
+            training: Whether to call the model in training or inference mode. Can take values of True or False.
 
         Returns:
             tf.Tensor: The output of the model after processing the inputs.
@@ -143,7 +144,7 @@ class StructuralModel(tf.keras.Model):
 
         inputs_nested = self.organize_inputs_by_model(inputs) ## this function organises flat inputs into a list of lists, which makes model training easier
 
-        out=tf.stack([self.model_list[vie](inputs_nested[vie]) for vie in range(len(self.model_list))],axis=2) ## Stack the outputs 
+        out=tf.stack([self.model_list[vie](inputs_nested[vie], training = training) for vie in range(len(self.model_list))],axis=2) ## Stack the outputs 
     
         return out
     
@@ -188,22 +189,14 @@ class StructuralModel(tf.keras.Model):
 
         ## Here, we re-normalise the model weights
         scale_fact = tf.cast(self.tot_num/tf.shape(y)[0],dtype=float) # scale factor for re-scaling
-        y_views = []
+
+        y_list = []
         for vie in range(len(self.model_list)):
             y_view = y[:,:,vie] ## This is the current view under analysis
-            self.model_list[vie].layers[-1].weight_normalizer([y_view, scale_fact]) ## Normalize weights and return normalized output
-
-        if self.orthogonalization=='Moore-Penrose':
-            y = tf.divide(y,tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(y),axis=0)))) ## Here, we re-normalize DLVs
-        elif self.orthogonalization=='zca':
-            y_views = []
-            for vie in range(len(self.model_list)):
-                y_view = y[:,:,vie]
-                inverse_matrix = tf.linalg.sqrtm(tf.linalg.inv(self.model_list[vie].layers[-1].moving_conv2))
-                y_view = tf.matmul(y_view, inverse_matrix)
-                y_views.append(y_view)
-            y = tf.stack(y_views, axis=-1)
-
+            y_view = self.model_list[vie].layers[-1].weight_normalizer([y_view, scale_fact]) ## Normalize weights and return normalized output (last layer of model)
+            y_list.append(y_view) ## append normalized output to list
+        y = tf.stack(y_list, axis=-1) ## normalized data output
+            
 
         total_loss = [None]*(len(self.model_list))
         total_CC = [None]*(len(self.model_list))
@@ -219,7 +212,9 @@ class StructuralModel(tf.keras.Model):
                 
                 ## forward pass
                 y_pred = self.model_list[vie](inputs_nested[vie], training=True)
-                
+
+                y_pred = tf.divide(y_pred,tf.math.multiply(tf.math.sqrt(scale_fact),tf.norm(y_pred,axis=0))) ## Here, we re-normalize DLVs
+
                 mse_loss = self.mse_loss(y, y_pred, vie)
                 
                 internal_loss = self.model_list[vie].losses
@@ -332,14 +327,14 @@ class StructuralModel(tf.keras.Model):
         
         """ This function returns the mean squared error loss between the latent
         factors in a particular data-view, and the latent factors to which that
-        data-view is connected via the global PLS model.
+        data-view is connected via the global DLVPM model.
         """
         
         y_true =  tf.squeeze(tf.gather(y_true,tf.where(self.Path[vie,:]),axis=2),axis=3) ## select the latent factors connected to the latent factor for view vie
         
         y_pred = tf.expand_dims(y_pred,axis=2) ## expand dimensions of the predicted latent factor so broadcasting is possible
         
-        mse_loss = tf.reduce_sum(tf.math.reduce_sum(tf.math.square(tf.subtract(y_true,y_pred)),axis=0))
+        mse_loss = tf.divide(tf.reduce_sum(tf.math.reduce_mean(tf.math.square(tf.subtract(y_true,y_pred)),axis=0)),2)
 
         return mse_loss
     
