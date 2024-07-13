@@ -12,12 +12,12 @@ The implementation of this method is built around a custom keras/tensorflow mode
 
 **Installation**
 
-This package was most recently tested on Tensorflow 2.16.2, which is compatible with Python 3.12. This version of tensorflow will be installed automatically with Deep_LVPM
+This package was most recently tested on Tensorflow 2.16.2, which is compatible with Python 3.12. This version of tensorflow will be installed automatically with Deep_LVPM.
 
 
 ~~~
 
-conda create -n myenv python=3.11
+conda create -n myenv python=3.12
 
 ~~~
 
