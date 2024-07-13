@@ -12,9 +12,8 @@ The implementation of this method is built around a custom keras/tensorflow mode
 
 **Installation**
 
-Tensorflow 2.16 represented a very heavy refactor to accomodate the update from keras 2 to keras 3. We are currently working to update the package so it is compatible with Tensorflow > version 2.15. At present, we recommend using tensorflow 2.15, which is compatible with python 3.11 (this version of tensorflow will be installed automatically with Deep_LVPM).
+This package was most recently tested on Tensorflow 2.16.2, which is compatible with Python 3.12. This version of tensorflow will be installed automatically with Deep_LVPM
 
-You can create a new conda environment utilizing python 3.11 with:
 
 ~~~
 
@@ -45,7 +44,7 @@ pip install git+https://github.com/alexjamesing/Deep_LVPM.git
 
 In the tutorial below, we give a very simple example of how DLVPM can be used. This tutorial uses the MNIST dataset (the hello world! of machine learning!!), designed to give the user an idea of how a DLVPM StructuralModel can be instantiated, then trained, tested and saved. 
 
-In this example, the DLVPM method constructs deep latent variables (DLVs) that are highly correlated between image and categorical data.
+In this example, the DLVPM method constructs deep latent variables (DLVs) that are highly correlated between image and categorical data. This is the simplest kind of DLVPM model, with just two data-types. It should be possible to train this model on a modern laptop, using only CPU, in just a few minutes. 
 
 First, we need to download the MNIST dataset, and prepare it for use with the DLVPM model:
 
@@ -113,7 +112,7 @@ MNIST_image_model = keras.Sequential(
     ]
 )
 
-data_input = keras.Input(shape = 10)
+data_input = keras.Input(shape = (10,))
 MNIST_label_model=keras.Model(inputs=data_input,outputs=data_input)
   
 ~~~
