@@ -108,25 +108,26 @@ class StructuralModel(tf.keras.Model):
         :return: The model with an added FactorLayer on top.
         """
         if isinstance(model, tf.keras.Sequential):
-            # For sequential models, we can just add a new layer on top
             if self.orthogonalization == 'Moore-Penrose':
-                model.add(FactorLayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum,epsilon=self.epsilon))
-            if self.orthogonalization == 'zca':
-                model.add(ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum,epsilon=self.epsilon))
+                model.add(FactorLayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon))
+            elif self.orthogonalization == 'zca':
+                model.add(ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon))
             else:
                 print('Orthogonalization mode not recognised, must be "Moore-Penrose" or "zca"')
         elif isinstance(model, tf.keras.Model):
-            # For functional models, we need to create a new model with the added layer
+            input = model.input
             if self.orthogonalization == 'Moore-Penrose':
-                input = model.input
-                x = FactorLayer(kernel_regularizer=regularizer,tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum,epsilon=self.epsilon)(model.output)
+                x = FactorLayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon)(model.output)
                 model = tf.keras.Model(inputs=input, outputs=x)
-            if self.orthogonalization == 'zca':
-                input = model.input
-                x = ZCALayer(kernel_regularizer=regularizer,tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum,epsilon=self.epsilon)(model.output)
+            elif self.orthogonalization == 'zca':
+                x = ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon)(model.output)
                 model = tf.keras.Model(inputs=input, outputs=x)
+            else:
+                print('Orthogonalization mode not recognised, must be "Moore-Penrose" or "zca"')
         else:
             raise ValueError("The input model must be either a tf.keras.Sequential or a tf.keras.Model instance.")
+
+        
         return model
 
     
