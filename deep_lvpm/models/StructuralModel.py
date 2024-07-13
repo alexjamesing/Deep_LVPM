@@ -26,7 +26,7 @@ loss_tracker_mse = tf.keras.metrics.Mean(name="mean_squared_loss")
 corr_tracker = tf.keras.metrics.Mean(name="corr_metric")
 
 
-@tf.keras.utils.register_keras_serializable(package='YourPackageName', name='YourCustomName')
+@tf.keras.utils.register_keras_serializable(package="deep_lvpm",name="StructuralModel")
 class StructuralModel(tf.keras.Model):
     
     """
@@ -480,12 +480,12 @@ class StructuralModel(tf.keras.Model):
         config['Path'] = tf.constant(config['Path'])
         
         # Deserialize each model in the model list using a list comprehension
-        config['model_list'] = [tf.keras.saving.deserialize_keras_object(model_config) for model_config in config['model_list']]
+        config['model_list'] = [tf.keras.utils.deserialize_keras_object(model_config) for model_config in config['model_list']]
         config['run_from_config'] = True
         
         # If regularization is present in the config, deserialize it
         if 'regularizer_list' in config:
-            config['regularizer_list'] = [tf.keras.saving.deserialize_keras_object(regularizer_config) for regularizer_config in config['regularizer_list']]
+            config['regularizer_list'] = [tf.keras.utils.deserialize_keras_object(regularizer_config) for regularizer_config in config['regularizer_list']]
         
         return cls(**config)
     
@@ -497,7 +497,7 @@ class StructuralModel(tf.keras.Model):
             dict: A dictionary containing the serialized optimizer configurations of the models.
         """
         return {
-            "model_optimizers": [tf.keras.saving.serialize_keras_object(model.optimizer) for model in self.model_list]
+            "model_optimizers": [tf.keras.utils.serialize_keras_object(model.optimizer) for model in self.model_list]
         }
     
     def compile_from_config(self, config):
@@ -507,7 +507,7 @@ class StructuralModel(tf.keras.Model):
         Args:
             config (dict): A dictionary containing the serialized optimizer configurations.
         """
-        optimizer_list = [tf.keras.saving.deserialize_keras_object(optimizer_config) for optimizer_config in config["model_optimizers"]]
+        optimizer_list = [tf.keras.utils.deserialize_keras_object(optimizer_config) for optimizer_config in config["model_optimizers"]]
         self.compile(optimizer_list)
 
     def build_from_config(self, config):

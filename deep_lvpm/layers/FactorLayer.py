@@ -299,7 +299,7 @@ class FactorLayer(tf.keras.layers.Layer):
         base_config = super().get_config()
         
         config={
-            'kernel_regularizer': tf.keras.saving.serialize_keras_object(self.kernel_regularizer),
+            'kernel_regularizer':  tf.keras.regularizers.serialize(self.kernel_regularizer),
             'momentum': self.momentum,
             'epsilon': self.epsilon,
             'tot_num': self.tot_num,

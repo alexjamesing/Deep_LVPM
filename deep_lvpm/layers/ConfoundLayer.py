@@ -13,7 +13,7 @@ import tensorflow as tf
 
 import tensorflow.keras as keras
 
-@tf.keras.utils.register_keras_serializable(package='YourPackageName', name='YourCustomName')
+@tf.keras.utils.register_keras_serializable(package="deep_lvpm",name="ConfoundLayer")
 class ConfoundLayer(tf.keras.layers.Layer):
     
     """ The purpose of this layer is to orthogonalise data-inputs with respect
