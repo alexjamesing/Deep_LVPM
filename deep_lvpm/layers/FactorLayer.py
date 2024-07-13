@@ -17,7 +17,7 @@ from keras import saving
 # changes to git again change
 
 
-@tf.keras.utils.register_keras_serializable(package='YourPackageName', name='YourCustomName')
+@tf.keras.utils.register_keras_serializable(package='deep_lvpm', name='FactorLayer')
 class FactorLayer(tf.keras.layers.Layer):
     
     """This layer should be placed at the end of DLVPM models. The layer 
