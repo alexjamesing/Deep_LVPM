@@ -144,8 +144,8 @@ regularizer_list = [None,None] ## regularizer_list
 
 ndims = 9 # the number of DLVs we wish to extract
 tot_num = x_train.shape[0] # the total number of samples, which is used for internal normalisation
-batch_size = 32
-epochs = 20
+batch_size = 256
+epochs = 10
 
 DLVPM_Model = StructuralModel(Path, model_list, regularizer_list, tot_num, ndims)
 

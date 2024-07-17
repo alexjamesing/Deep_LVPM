@@ -80,15 +80,11 @@ class StructuralModel(tf.keras.Model):
         super().__init__(**kwargs)    
         
         self.Path = Path
-        self.model_list = model_list
         self.tot_num = tot_num
         self.ndims = ndims
         self.momentum = momentum
         self.epsilon = epsilon
         self.orthogonalization=orthogonalization
-        self.loss_tracker_total = tf.keras.metrics.Mean(name="total_loss")
-        self.corr_tracker = tf.keras.metrics.Mean(name="cross_metric")
-        self.loss_tracker_mse = tf.keras.metrics.Mean(name="mse_loss")
         self.regularizer_list = regularizer_list
 
         if not run_from_config:
@@ -96,6 +92,11 @@ class StructuralModel(tf.keras.Model):
             self.model_list = [self.add_DLVPM_layer(model, regularizer) for model, regularizer in zip(model_list, regularizer_list)]
         else:
             self.model_list = model_list
+
+        self.loss_tracker_total = tf.keras.metrics.Mean(name="total_loss")
+        self.corr_tracker = tf.keras.metrics.Mean(name="cross_metric")
+        self.loss_tracker_mse = tf.keras.metrics.Mean(name="mse_loss")
+
     
     def add_DLVPM_layer(self, model, regularizer):
         """
@@ -115,10 +116,9 @@ class StructuralModel(tf.keras.Model):
             else:
                 print('Orthogonalization mode not recognised, must be "Moore-Penrose" or "zca"')
         elif isinstance(model, tf.keras.Model):
-            input = model.input
             if self.orthogonalization == 'Moore-Penrose':
                 x = FactorLayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon)(model.output)
-                model = tf.keras.Model(inputs=input, outputs=x)
+                model = tf.keras.Model(inputs=model.input, outputs=x)
             elif self.orthogonalization == 'zca':
                 x = ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon)(model.output)
                 model = tf.keras.Model(inputs=input, outputs=x)
@@ -129,6 +129,8 @@ class StructuralModel(tf.keras.Model):
 
         
         return model
+
+
 
     
     def call(self, inputs, training=False):
