@@ -1,7 +1,7 @@
 
 ![Alt text](dlvpm_logo_final.png)
 
-**Deep LVPM**
+# Deep LVPM
 
 Deep Latent Variable Path Modelling (DLVPM) is a method for path/structural equation modelling utilising deep neural networks. The aim of the method is to connect different data types together via sets of orthogonal deep latent variables (DLVs). This work has now been published here: 
 
@@ -13,7 +13,7 @@ Following installation instructions, the README contains two tutorials. The aim 
 
 After these tutorials, information is given on core classes that make up the toolbox.
 
-**Installation**
+# Installation
 
 This package was most recently tested on Tensorflow 2.16.2, which is compatible with Python 3.12. This version of tensorflow will be installed automatically with Deep_LVPM. We recomend creating a fresh install using eg conda or venv.
 
@@ -27,14 +27,14 @@ pip install git+https://github.com/alexjamesing/Deep_LVPM.git
 venv:
 ~~~
 python3 -m venv myenv   # requires Python 3.12+
-source dlvpm-env/bin/activate # on mac/linux
+source myenv/bin/activate # on mac/linux
 myenv\Scripts\activate # on windows
 pip install git+https://github.com/alexjamesing/Deep_LVPM.git
 ~~~
 
 BRIEF NOTE: The DLVPM method is currently based on keras2, which uses the tensorflow backend. We are currently updating the package to keras3 which allows the use of tensorflow, pytorch and jax.
 
-**Example Application 1: linking images and labels in MNIST (simple, two data types)**
+# Example Application 1: linking images and labels in MNIST (simple, two data types)
 
 In the tutorial below, we give a very simple example of how DLVPM can be used. This tutorial uses the MNIST dataset (the hello world! of machine learning!!), designed to give the user an idea of how a DLVPM StructuralModel can be instantiated, then trained, tested and saved. 
 
@@ -243,7 +243,7 @@ plt.show()
 ~~~
 
 
-**Example Application 2: linking processed 'omics and imaging cancer data using DLVPM**
+# Example Application 2: linking processed 'omics and imaging cancer data using DLVPM
 
 Deep Latent‑Variable Path Modelling (DLVPM) fuses deep, non‑linear *measurement* models for each data block with an explicit **structural path matrix** that links the latent factors themselves.  
 
