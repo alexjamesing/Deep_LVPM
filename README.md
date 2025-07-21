@@ -107,7 +107,8 @@ MNIST_image_model = keras.Sequential(
 )
 
 data_input = keras.Input(shape = (10,))
-MNIST_label_model=keras.Model(inputs=data_input,outputs=data_input)
+data_output = keras.layers.Activation('linear', name='identity')(data_input)
+MNIST_label_model=keras.Model(inputs=data_input,outputs=data_output)
   
 ~~~
 
