@@ -2,19 +2,15 @@
 # -*- coding: utf-8 -*-
 """
 This script creates a custom Keras/TensorFlow model for identifying correlated factors
-(deep latent variables) between different data types. It is designed to work with different
-data-views, and it establishes associations between these views using deep latent
-variables. The data-views we wish to optimise associations between are defined using an 
-adjacency matrix.
+(canonical variates) between different data types. 
+
 """
 
 import os
 import tensorflow as tf
 import numpy as np
 # import deep_lvpm 
-from deep_lvpm.layers.FactorLayer import FactorLayer
 from deep_lvpm.layers.ZCALayer import ZCALayer
-from deep_lvpm.layers.ConfoundLayer import ConfoundLayer
 import pydot
 
 # from Custom_Losses_and_Metrics import mse_loss
@@ -25,11 +21,8 @@ loss_tracker_total = tf.keras.metrics.Mean(name="total_loss")
 loss_tracker_mse = tf.keras.metrics.Mean(name="mean_squared_loss")
 corr_tracker = tf.keras.metrics.Mean(name="corr_metric")
 
-
-
-
-@tf.keras.utils.register_keras_serializable(package="deep_lvpm",name="StructuralModel")
-class StructuralModel(tf.keras.Model):
+@tf.keras.saving.register_keras_serializable(package="deep_lvpm",name="DCCA")
+class DCCA(tf.keras.Model):
     
     """
     A custom Keras model to establish associations between different data-views.
@@ -40,8 +33,9 @@ class StructuralModel(tf.keras.Model):
     where ones represent connections, and zeros represent un-connected data-views.
 
     Attributes:
-        Path: A binary adjacency matrix defining the connections between data-views.
+
         model_list: A list of Keras models for each data-view.
+        regularizer_list (list): A list of regularizers for each model, applied to the projection layer
         tot_num: Total number of features across all batches.
         ndims: Number of orthogonal latent variables to construct.
         epochs: Number of training epochs.
@@ -62,47 +56,40 @@ class StructuralModel(tf.keras.Model):
     """
 
     
-    def __init__(self, Path, model_list, regularizer_list, tot_num, ndims, orthogonalization='Moore-Penrose', momentum=0.95, epsilon=1e-4, train_DLV=False, run_from_config=False, **kwargs):
+    def __init__(self, model_list, regularizer_list, tot_num, ndims, momentum=0.95, epsilon=1e-4, run_from_config=False, **kwargs):
         
         """
-        Initializes the StructuralModel instance.
+        Initializes the DCCAModel instance.
 
         Args:
-            Path (tf.Tensor or np.array): A binary adjacency matrix defining connections between data-views.
-            regularizer_list (list): A list of regularizers that are applied to projection layers for models
-            in each data-view.
-            model_list (list): A list of Keras models for each data-view.
+            model_list (list): A list of Keras models for each data-view, should be len(model_list)=2.
+            regularizer_list (list): A list of regularizers for each model, applied to the projection layer
             tot_num (int): Total number of features across all batches.
             ndims (int): Number of orthogonal latent variables to construct.
             orthogonalization (str, optional): Orthogonalisation procedure. Defaults to 'Moore-Penrose'.
             momentum (Float, optional): The momentum defines how quickly global parameters such as means and correlation matrices are updated
             epsilon (Float, optional): "epsilon" (often denoted as ε) is a small constant added for numerical stability in batch updates
-            train_DLV (True/False): "train_DLV" defines whether target DLVs are calcualted in training or testing modes during model training
         """
 
         super().__init__(**kwargs)    
         
-        self.Path = Path
+        self.model_list = model_list
         self.tot_num = tot_num
         self.ndims = ndims
         self.momentum = momentum
         self.epsilon = epsilon
-        self.orthogonalization=orthogonalization
-        self.regularizer_list = regularizer_list
-        self.train_DLV = train_DLV
-
-        if not run_from_config:
-        # Add factor layer to each model in the list
-            self.model_list = [self.add_DLVPM_layer(model, regularizer) for model, regularizer in zip(model_list, regularizer_list)]
-        else:
-            self.model_list = model_list
-
         self.loss_tracker_total = tf.keras.metrics.Mean(name="total_loss")
         self.corr_tracker = tf.keras.metrics.Mean(name="cross_metric")
         self.loss_tracker_mse = tf.keras.metrics.Mean(name="mse_loss")
+        self.regularizer_list = regularizer_list
 
+        if not run_from_config:
+        # Add factor layer to each model in the list
+            self.model_list = [self.add_DCCA_layer(model, regularizer) for model, regularizer in zip(model_list, regularizer_list)]
+        else:
+            self.model_list = model_list
     
-    def add_DLVPM_layer(self, model, regularizer):
+    def add_DCCA_layer(self, model, regularizer):
         """
         Adds a FactorLayer on top of the given model.
 
@@ -113,37 +100,25 @@ class StructuralModel(tf.keras.Model):
         :return: The model with an added FactorLayer on top.
         """
         if isinstance(model, tf.keras.Sequential):
-            if self.orthogonalization == 'Moore-Penrose':
-                model.add(FactorLayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon))
-            elif self.orthogonalization == 'zca':
-                model.add(ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon))
-            else:
-                print('Orthogonalization mode not recognised, must be "Moore-Penrose" or "zca"')
+            # For sequential models, we can just add a new layer on top
+            model.add(ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum,epsilon=self.epsilon))
+
         elif isinstance(model, tf.keras.Model):
-            if self.orthogonalization == 'Moore-Penrose':
-                x = FactorLayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon)(model.output)
-                model = tf.keras.Model(inputs=model.input, outputs=x)
-            elif self.orthogonalization == 'zca':
-                x = ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon)(model.output)
-                model = tf.keras.Model(inputs=model.input, outputs=x)
-            else:
-                print('Orthogonalization mode not recognised, must be "Moore-Penrose" or "zca"')
+            # For functional models, we need to create a new model with the added layer
+            input = model.input
+            x = ZCALayer(kernel_regularizer=regularizer,tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum,epsilon=self.epsilon)(model.output)
+            model = tf.keras.Model(inputs=input, outputs=x)
         else:
             raise ValueError("The input model must be either a tf.keras.Sequential or a tf.keras.Model instance.")
-
-        
         return model
 
-
-
     
-    def call(self, inputs, training=False):
+    def call(self,inputs):
         """
         Run data through each of the measurement sub-models.
 
         Args:
             inputs (list): A list of inputs for each data-view.
-            training: Whether to call the model in training or inference mode. Can take values of True or False.
 
         Returns:
             tf.Tensor: The output of the model after processing the inputs.
@@ -151,8 +126,8 @@ class StructuralModel(tf.keras.Model):
 
         inputs_nested = self.organize_inputs_by_model(inputs) ## this function organises flat inputs into a list of lists, which makes model training easier
 
-        out=tf.stack([self.model_list[vie](inputs_nested[vie], training = training) for vie in range(len(self.model_list))],axis=2) ## Stack the outputs 
-    
+        out=tf.stack([self.model_list[vie](inputs_nested[vie]) for vie in range(len(self.model_list))],axis=2) 
+        
         return out
     
     def organize_inputs_by_model(self, data_inputs):
@@ -192,18 +167,12 @@ class StructuralModel(tf.keras.Model):
         inputs=inputs[0]
         
         # Here, we run the current data-iteration through the global model in a forward 
-        y = self(inputs, training=self.train_DLV)  ## forward pass
-
-        ## Here, we re-normalise the model weights
+        # pass. We do this so that we can re-normalise the weights. 
+        is_training = False
+        #
+        y = self(inputs, training=is_training)  ## forward pass
         scale_fact = tf.cast(self.tot_num/tf.shape(y)[0],dtype=float) # scale factor for re-scaling
-
-        y_list = []
-        for vie in range(len(self.model_list)):
-            y_view = y[:,:,vie] ## This is the current view under analysis
-            y_view = self.model_list[vie].layers[-1].weight_normalizer([y_view, scale_fact]) ## Normalize weights and return normalized output (last layer of model)
-            y_list.append(y_view) ## append normalized output to list
-        y = tf.stack(y_list, axis=-1) ## normalized data output
-            
+        y = tf.divide(y,tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(y),axis=0)))) ## Here, we re-normalize DLVs
 
         total_loss = [None]*(len(self.model_list))
         total_CC = [None]*(len(self.model_list))
@@ -213,23 +182,20 @@ class StructuralModel(tf.keras.Model):
 
         ## Iterate through training data-views
         for vie in range(len(self.model_list)):
-
-
            
+        
             with tf.GradientTape() as tape:
                 
                 ## forward pass
                 y_pred = self.model_list[vie](inputs_nested[vie], training=True)
-
-                y_pred = tf.divide(y_pred,tf.math.multiply(tf.math.sqrt(scale_fact),tf.norm(y_pred,axis=0))) ## Here, we re-normalize DLVs
-
+                
                 mse_loss = self.mse_loss(y, y_pred, vie)
                 
                 internal_loss = self.model_list[vie].losses
                 
                 # # Compute the loss for the data-view in question
                 loss = mse_loss + internal_loss
-            
+              
             
             # Compute gradients
             trainable_vars = self.model_list[vie].trainable_variables
@@ -244,7 +210,7 @@ class StructuralModel(tf.keras.Model):
             total_loss[vie]=tf.math.reduce_sum(loss)
             total_CC[vie]=corr_metric
             total_mse[vie]=mse_loss
-                
+            
         # Update losses and metrics
         self.loss_tracker_total.update_state(tf.stack(total_loss))
         self.corr_tracker.update_state(tf.stack(total_CC))
@@ -335,22 +301,20 @@ class StructuralModel(tf.keras.Model):
         
         """ This function returns the mean squared error loss between the latent
         factors in a particular data-view, and the latent factors to which that
-        data-view is connected via the global DLVPM model.
+        data-view is connected via the global PLS model.
         """
         
         y_true =  tf.squeeze(tf.gather(y_true,tf.where(self.Path[vie,:]),axis=2),axis=3) ## select the latent factors connected to the latent factor for view vie
         
         y_pred = tf.expand_dims(y_pred,axis=2) ## expand dimensions of the predicted latent factor so broadcasting is possible
         
-        mse_loss = tf.divide(tf.reduce_sum(tf.math.reduce_mean(tf.math.square(tf.subtract(y_true,y_pred)),axis=0)),2)
-
-        return mse_loss
+        return tf.reduce_sum(tf.math.reduce_sum(tf.math.square(tf.subtract(y_true,y_pred)),axis=0))
     
     def corr_metric(self,y_true,y_pred,vie):
         
         """ This function returns the mean correlation between the latent factors
         in a data-view, and the latent factors to which that data-view is connected 
-        via the global DLVPM model.
+        via the global PLS model.
         
         """
       
@@ -410,42 +374,11 @@ class StructuralModel(tf.keras.Model):
 
             # Compute the correlation matrix for the current dimension
             correlation_matrix = tf.linalg.matmul(normalized_DLVs, normalized_DLVs, transpose_a=True) / tf.cast(tf.shape(dim_DLVs)[0], tf.float32)
+            tf.print(correlation_matrix)
             correlation_matrices.append(correlation_matrix)
-
+        
         return correlation_matrices
-    
-
-    def plot_structural_model(self, outputname):
-        """
-        This function plots the structural/path. model. Visualisation is quite simple. 
-        Aesthetics are similar to those used in tf.keras.utils.plot_model()
-        outputname: This is the name of the output where we save the results. 
-
-        """
-        # Create a PyDot graph
-        graph = pydot.Dot(graph_type='digraph', rankdir='TB')
-
-        model_layer_list= [len(model.layers) for model in self.model_list]
-
-        # Create nodes with labels
-        for i in range(len(self.model_list)):
-
-            label = "Measurement Model " + str(i) + "," + " " + str(model_layer_list[i]) + " layers"
-            node = pydot.Node(str(i), label=label, shape="record") # create nodes to add to the pydot object
-            graph.add_node(node) # add nodes to the pydot graph object
-
-        adj_matrix = self.Path # this is the path. model we wish to plot
-
-        # Create edges
-        for i, row in enumerate(adj_matrix):
-            for j, val in enumerate(row):
-                if val == 1:
-                    edge = pydot.Edge(str(i), str(j))
-                    graph.add_edge(edge)
-
-        graph.write_png(outputname)
-
-            
+         
 
     def get_config(self):
 
@@ -487,12 +420,12 @@ class StructuralModel(tf.keras.Model):
         config['Path'] = tf.constant(config['Path'])
         
         # Deserialize each model in the model list using a list comprehension
-        config['model_list'] = [tf.keras.utils.deserialize_keras_object(model_config) for model_config in config['model_list']]
+        config['model_list'] = [tf.keras.saving.deserialize_keras_object(model_config) for model_config in config['model_list']]
         config['run_from_config'] = True
         
         # If regularization is present in the config, deserialize it
         if 'regularizer_list' in config:
-            config['regularizer_list'] = [tf.keras.utils.deserialize_keras_object(regularizer_config) for regularizer_config in config['regularizer_list']]
+            config['regularizer_list'] = [tf.keras.saving.deserialize_keras_object(regularizer_config) for regularizer_config in config['regularizer_list']]
         
         return cls(**config)
     
@@ -504,7 +437,7 @@ class StructuralModel(tf.keras.Model):
             dict: A dictionary containing the serialized optimizer configurations of the models.
         """
         return {
-            "model_optimizers": [tf.keras.utils.serialize_keras_object(model.optimizer) for model in self.model_list]
+            "model_optimizers": [tf.keras.saving.serialize_keras_object(model.optimizer) for model in self.model_list]
         }
     
     def compile_from_config(self, config):
@@ -514,7 +447,7 @@ class StructuralModel(tf.keras.Model):
         Args:
             config (dict): A dictionary containing the serialized optimizer configurations.
         """
-        optimizer_list = [tf.keras.utils.deserialize_keras_object(optimizer_config) for optimizer_config in config["model_optimizers"]]
+        optimizer_list = [tf.keras.saving.deserialize_keras_object(optimizer_config) for optimizer_config in config["model_optimizers"]]
         self.compile(optimizer_list)
 
     def build_from_config(self, config):

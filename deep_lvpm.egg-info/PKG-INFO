@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: deep-lvpm
+Version: 0.1.1
+Summary: A package for carrying out deep latent variable path modeĺling
+Author: Alex James Ing
+Requires-Dist: tensorflow==2.16.2
+Requires-Dist: pydot
+Requires-Dist: scikit-learn
+Requires-Dist: matplotlib
+Dynamic: author
+Dynamic: requires-dist
+Dynamic: summary

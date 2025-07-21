@@ -1,0 +1,4 @@
+tensorflow==2.16.2
+pydot
+scikit-learn
+matplotlib

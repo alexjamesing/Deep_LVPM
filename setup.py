@@ -5,7 +5,7 @@ import setuptools
 
 setuptools.setup(
     name="deep-lvpm",
-    version="0.1",
+    version="0.1.1",
     author="Alex James Ing",
     description="A package for carrying out deep latent variable path modeĺling",
     packages=setuptools.find_packages(),
