@@ -463,6 +463,15 @@ print(np.corrcoef(test_DLVs[:,1,:].T))
 
 ~~~
 
+We can also now save the model to disk using:
+
+~~~
+
+DLVPM_Model.save('/output_folder/DLVPM_Model.keras')
+
+~~~
+
+
 In the text below, we give an explanation of each of the custom model and layer types that are used in the DLVPM toolbox.
 
 # StructuralModel
