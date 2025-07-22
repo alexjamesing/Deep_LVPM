@@ -14,5 +14,8 @@ setuptools.setup(
         'pydot',
         'scikit-learn',
         'matplotlib'
-    ]
+    ],
+    package_data={
+        "deep_lvpm.data": ["*.npz"],
+    }
 )

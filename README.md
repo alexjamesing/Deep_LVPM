@@ -468,7 +468,7 @@ We can also now save the model to disk using:
 
 ~~~
 
-DLVPM_Model.save('/output_folder/DLVPM_Model.keras')
+DLVPM_Structural_instance.save('/output_folder/DLVPM_Model.keras')
 
 ~~~
 
