@@ -14,36 +14,12 @@ import numpy as np
 # import deep_lvpm 
 from deep_lvpm.layers.FactorLayer import FactorLayer
 from deep_lvpm.layers.ZCALayer import ZCALayer
-from deep_lvpm.layers.ConfoundLayer import ConfoundLayer
 import pydot
-
-# from Custom_Losses_and_Metrics import mse_loss
-# from Custom_Losses_and_Metrics import corr_metric
 
 # Set up metrics trackers
 loss_tracker_total = tf.keras.metrics.Mean(name="total_loss")
 loss_tracker_mse = tf.keras.metrics.Mean(name="mean_squared_loss")
 corr_tracker = tf.keras.metrics.Mean(name="corr_metric")
-
-def mean_absolute_correlation(y):
-    # Calculate the correlation matrix between features
-    y_centered = y - tf.reduce_mean(y, axis=0, keepdims=True)
-    covariance_matrix = tf.matmul(y_centered, y_centered, transpose_a=True) / tf.cast(tf.shape(y)[0] - 1, tf.float32)
-    
-    # Standard deviations of each feature
-    stddevs = tf.sqrt(tf.linalg.diag_part(covariance_matrix))
-    stddev_matrix = tf.expand_dims(stddevs, axis=0) * tf.expand_dims(stddevs, axis=1)
-    
-    # Correlation matrix (avoid division by zero)
-    correlation_matrix = tf.where(stddev_matrix != 0, covariance_matrix / stddev_matrix, tf.zeros_like(covariance_matrix))
-    
-    # Compute mean absolute correlation, excluding diagonal
-    num_features = tf.shape(correlation_matrix)[0]
-    mask = tf.ones_like(correlation_matrix, dtype=tf.bool)  # Boolean mask
-    mask = tf.linalg.set_diag(mask, tf.zeros(num_features, dtype=tf.bool))  # Exclude diagonal
-    mean_abs_corr = tf.reduce_mean(tf.abs(tf.boolean_mask(correlation_matrix, mask)))
-    
-    return mean_abs_corr
 
 @tf.keras.utils.register_keras_serializable(package="deep_lvpm",name="SiameseTwins")
 class SiameseTwins(tf.keras.Model):
@@ -219,10 +195,6 @@ class SiameseTwins(tf.keras.Model):
             scale_fact = tf.cast(self.tot_num/tf.shape(y)[0],dtype=float) # scale factor for re-scaling
             y = self.model.layers[-1].weight_normalizer([y, scale_fact]) ## Normalize weights and return normalized output (last layer of model)
 
-            mean_corr = mean_absolute_correlation(y)
-
-            tf.print('mean self-correlation is:' + str(mean_corr))
-
             with tf.GradientTape() as tape:
                 
                 ## forward pass
@@ -242,7 +214,7 @@ class SiameseTwins(tf.keras.Model):
             gradients = tape.gradient(loss, trainable_vars)
             
             # Update weights
-            self.model.optimizer.apply_gradients(zip(gradients, trainable_vars))
+            self.optimizer.apply_gradients(zip(gradients, trainable_vars))
             
             corr_metric=self.corr_metric(y,y_pred)
             
@@ -258,18 +230,9 @@ class SiameseTwins(tf.keras.Model):
         
         return {"total_loss": self.loss_tracker_total.result(), "cross_metric": self.corr_tracker.result(), "mse_loss":self.loss_tracker_mse.result()}
 
-    def compile(self, optimizer):
-        """ Here, we overwrite the model compilation step. This is necessary as
-        normally, the model compilation step would normally take a loss. Using
-        this method, the loss is built into the method itself. We can either 
-        pass the optimizer a single optimizer object, or a list of objects, with a 
-        different optimizer used for each data-view.
-        """
-        
-        super().compile()
-
-        self.model.compile(optimizer)
-        
+    def compile(self, optimizer, **kwargs):
+        # compile 
+        super().compile(optimizer=optimizer, **kwargs)
    
 
     def test_step(self, inputs):
@@ -298,8 +261,7 @@ class SiameseTwins(tf.keras.Model):
             scale_fact = tf.cast(self.tot_num/tf.shape(y)[0],dtype=float) # scale factor for re-scaling
             y = self.model.layers[-1].weight_normalizer([y, scale_fact]) ## Normalize weights and return normalized output (last layer of model)
             
-            tf.print(self.model.layers[-1].run)
-
+            
             ## forward pass
             y_pred = self.model(inputs_nested[vie], training=True)
 
@@ -418,26 +380,30 @@ class SiameseTwins(tf.keras.Model):
         
         return cls(**config)
     
-    # def get_compile_config(self):
-    #     """
-    #     Serializes the optimizer configurations of the models.
+#  def get_config(self):
+#         base = super().get_config()
+#         return {
+#             **base,
+#             "model": serialize_keras_object(self.model),
+#             "regularizer": serialize_keras_object(self.regularizer),
+#             "tot_num": self.tot_num,
+#             "ndims": self.ndims,
+#             "orthogonalization": self.orthogonalization,
+#             "momentum": self.momentum,
+#             "epsilon": self.epsilon,
+#             "diag_offset": self.diag_offset,
+#             "train_DLV": self.train_DLV,
+#             "siamese_type": self.siamese_type,
+#         }
 
-    #     Returns:
-    #         dict: A dictionary containing the serialized optimizer configurations of the models.
-    #     """
-    #     return {
-    #         "model_optimizers": [tf.keras.utils.serialize_keras_object(model.optimizer) for model in self.model_list]
-    #     }
-    
-    # def compile_from_config(self, config):
-    #     """
-    #     Compiles the models with the deserialized optimizer configurations.
+#     @classmethod
+#     def from_config(cls, config):
+#         model = deserialize_keras_object(config.pop("model"))
+#         regularizer = deserialize_keras_object(config.pop("regularizer"))
+#         config["run_from_config"] = True
+#         return cls(model=model, regularizer=regularizer, **config)
 
-    #     Args:
-    #         config (dict): A dictionary containing the serialized optimizer configurations.
-    #     """
-    #     optimizer_list = [tf.keras.utils.deserialize_keras_object(optimizer_config) for optimizer_config in config["model_optimizers"]]
-    #     self.compile(optimizer_list)
+
 
     def build_from_config(self, config):
         """ build is overwritten here as it is not needed. Individual measurement models
