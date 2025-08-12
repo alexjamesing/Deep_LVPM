@@ -3,7 +3,11 @@
 
 # Deep LVPM
 
-Deep Latent Variable Path Modelling (DLVPM) is a method for path/structural equation modelling utilising deep neural networks. The aim of the method is to connect different data types together via sets of orthogonal deep latent variables (DLVs). This work has now been published here: https://www.nature.com/articles/s42256-025-01052-4
+Deep Latent Variable Path Modelling (DLVPM) is a method for path/structural equation modelling utilising deep neural networks. The aim of the method is to connect different data types together via sets of orthogonal deep latent variables (DLVs). Full documentation for this package can be found here: https://deep-lvpm.readthedocs.io/en/latest/index.html. This work has now been published here: https://www.nature.com/articles/s42256-025-01052-4. 
+
+If you find this project valuable, please consider giving it a star on GitHub.  Your support helps others discover the project and motivates continued development!
+
+[![GitHub stars](https://img.shields.io/github/stars/alexjamesing/Deep_LVPM.svg?style=social&label=Star)](https://github.com/alexjamesing/Deep_LVPM)
 
 # Installation
 
