@@ -1,4 +1,3 @@
-.. Deep_LVPM documentation master file, created by ChatGPT.
 
 Welcome to Deep LVPM's documentation!
 =====================================
