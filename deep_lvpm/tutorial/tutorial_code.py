@@ -115,6 +115,11 @@ from keras import layers, ops
 # If your deep_lvpm package is on PYTHONPATH and contains the ops-based classes:
 from deep_lvpm.models.StructuralModel import StructuralModel
 
+import os as os
+
+os.environ["KERAS_BACKEND"] = "torch"
+
+
 # ----------------------------
 # 1) Data
 # ----------------------------
