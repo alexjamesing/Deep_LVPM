@@ -16,8 +16,7 @@ from deep_lvpm.layers.ZCALayer import ZCALayer
 from deep_lvpm.layers.ConfoundLayer import ConfoundLayer
 import pydot
 from keras import ops
-import tensorflow as tf
-import torch as torch
+
 
 # Set up metrics trackers
 loss_tracker_total = keras.metrics.Mean(name="total_loss")
