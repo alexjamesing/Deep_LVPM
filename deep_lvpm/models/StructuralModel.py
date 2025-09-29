@@ -183,6 +183,16 @@ class StructuralModel(keras.Model):
         return y_pred / denom
 
     def _step_tf(self, vie, inputs_v, y, scale_fact):
+
+        try:
+            import tensorflow as tf  # lazy import
+        except ImportError as e:    
+            raise RuntimeError(
+                "Tensorflow backend requested but it is not installed. "
+                "Install Tensorflow or switch Keras backend to Torch."
+            ) from e
+
+
         model = self.model_list[vie]
         with tf.GradientTape() as tape:
             y_pred = model(inputs_v, training=True)
@@ -198,6 +208,14 @@ class StructuralModel(keras.Model):
         return loss, mse_loss, corr
 
     def _step_torch(self, vie, inputs_v, y, scale_fact):
+
+        try:
+            import torch as torch  # lazy import
+        except ImportError as e:    
+            raise RuntimeError(
+                "Torch backend requested but it is not installed. "
+                "Install Torch or switch Keras backend to Tensorflow."
+            ) from e
 
         model = self.model_list[vie]
 
@@ -503,7 +521,7 @@ class StructuralModel(keras.Model):
             An instance of the class.
         """
         # Deserialize Keras/TensorFlow objects
-        config['Path'] = tf.constant(config['Path'])
+        config['Path'] = ops.convert_to_tensor(config["Path"], dtype=ops.floatx())
         
         # Deserialize each model in the model list using a list comprehension
         config['model_list'] = [keras.utils.deserialize_keras_object(model_config) for model_config in config['model_list']]
