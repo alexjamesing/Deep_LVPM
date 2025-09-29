@@ -302,9 +302,9 @@ class StructuralModel(keras.Model):
         if isinstance(optimizer, list):
             for vie in range(len(self.model_list)):
                 self.model_list[vie].compile(optimizer[vie])
-        elif isinstance(optimizer,keras.optimizers.Optimizer):
+        elif isinstance(optimizer,keras.optimizers.Optimizer): ## This case is important when running a siamese network on one data-view
             for vie in range(len(self.model_list)):
-                self.model_list[0].compile(optimizer[vie])
+                self.model_list[0].compile(optimizer)
         else:
             print('Error: optimizer must either be of the keras.optimizer class, or a list of objects of this class')
         
