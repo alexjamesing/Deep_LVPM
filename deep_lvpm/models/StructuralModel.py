@@ -58,7 +58,7 @@ class StructuralModel(keras.Model):
     """
 
     
-    def __init__(self, Path, model_list, regularizer_list, tot_num, ndims, orthogonalization='Moore-Penrose', momentum=0.95, epsilon=1e-4, train_DLV=False, run_from_config=False, **kwargs):
+    def __init__(self, Path, model_list, regularizer_list, tot_num, ndims, orthogonalization='Moore-Penrose', momentum=0.95, epsilon=1e-4, train_DLV=False, run_from_config=False, is_siamese=False, **kwargs):
         
         """
         Initializes the StructuralModel instance.
@@ -86,10 +86,15 @@ class StructuralModel(keras.Model):
         self.orthogonalization=orthogonalization
         self.regularizer_list = regularizer_list
         self.train_DLV = train_DLV
+        self.is_siamese = is_siamese
 
         if not run_from_config:
         # Add factor layer to each model in the list
-            self.model_list = [self.add_DLVPM_layer(model, regularizer) for model, regularizer in zip(model_list, regularizer_list)]
+            if self.is_siamese == True:
+                new_model = self.add_DLVPM_layer(model_list[0], regularizer_list[0])
+                self.model_list = [new_model] * len(model_list)   # duplicates the *reference*
+            else:
+                self.model_list = [self.add_DLVPM_layer(model, regularizer) for model, regularizer in zip(model_list, regularizer_list)]
         else:
             self.model_list = model_list
 
@@ -316,6 +321,8 @@ class StructuralModel(keras.Model):
         
         #self.global_build()
         
+
+
         if isinstance(optimizer, list):
             for vie in range(len(self.model_list)):
                 self.model_list[vie].compile(optimizer[vie])
