@@ -125,10 +125,17 @@ class ZCALayer(keras.layers.Layer):
         X = self.batch_norm1(inputs, training=training)
 
         if training:
-            self.update_moving_variables(X)
+            self.update_moving_variables(X)       
             out = ops.matmul(X, self.project)
         else:
+           
             out = ops.matmul(X, self.project)
+            # out_dtype = ops.dtype(out)
+            # scale_fact = ops.cast(self.tot_num, out_dtype) / ops.cast(ops.shape(out)[0], out_dtype)
+            # sqrt_inv_y = self.inv_sqrt_via_cholesky(
+            # self.moving_conv2 + self.decaying_diagonal(self.run, self.moving_conv2.shape[0])
+            # )
+            # out = ops.matmul(out, sqrt_inv_y)
 
         return out
 
@@ -224,7 +231,6 @@ class ZCALayer(keras.layers.Layer):
         sqrt_inv_y = self.inv_sqrt_via_cholesky(
             self.moving_conv2 + self.decaying_diagonal(self.run, self.moving_conv2.shape[0])
         )
-
         out_y = ops.matmul(ops.squeeze(y), sqrt_inv_y)
         
         return out_y

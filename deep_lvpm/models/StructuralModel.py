@@ -18,12 +18,6 @@ import pydot
 from keras import ops
 
 
-# Set up metrics trackers
-loss_tracker_total = keras.metrics.Mean(name="total_loss")
-loss_tracker_mse = keras.metrics.Mean(name="mean_squared_loss")
-corr_tracker = keras.metrics.Mean(name="corr_metric")
-
-
 @keras.utils.register_keras_serializable(package="deep_lvpm",name="StructuralModel")
 class StructuralModel(keras.Model):
     
@@ -58,7 +52,7 @@ class StructuralModel(keras.Model):
     """
 
     
-    def __init__(self, Path, model_list, regularizer_list, tot_num, ndims, orthogonalization='Moore-Penrose', momentum=0.95, epsilon=1e-4, train_DLV=False, run_from_config=False, is_siamese=False, **kwargs):
+    def __init__(self, Path, model_list, regularizer_list, tot_num, ndims, orthogonalization='Moore-Penrose', momentum=0.95, epsilon=1e-4, train_DLV=False, run_from_config=False, is_siamese=False, diag_offset=1e-3, **kwargs):
         
         """
         Initializes the StructuralModel instance.
@@ -87,6 +81,7 @@ class StructuralModel(keras.Model):
         self.regularizer_list = regularizer_list
         self.train_DLV = train_DLV
         self.is_siamese = is_siamese
+        self.diag_offset = diag_offset
 
         if not run_from_config:
         # Add factor layer to each model in the list
@@ -101,6 +96,8 @@ class StructuralModel(keras.Model):
         self.loss_tracker_total = keras.metrics.Mean(name="total_loss")
         self.corr_tracker = keras.metrics.Mean(name="cross_metric")
         self.loss_tracker_mse = keras.metrics.Mean(name="mse_loss")
+        self.loss_tracker_redundancy = keras.metrics.Mean(name="redundancy")
+
 
     
     def add_DLVPM_layer(self, model, regularizer):
@@ -117,15 +114,15 @@ class StructuralModel(keras.Model):
             if self.orthogonalization == 'Moore-Penrose':
                 model.add(FactorLayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon))
             elif self.orthogonalization == 'zca':
-                model.add(ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon))
+                model.add(ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon, diag_offset = self.diag_offset))
             else:
                 print('Orthogonalization mode not recognised, must be "Moore-Penrose" or "zca"')
         elif isinstance(model, keras.Model):
             if self.orthogonalization == 'Moore-Penrose':
-                x = FactorLayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon)(model.output)
+                x = FactorLayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon, diag_offset = self.diag_offset)(model.output)
                 model = keras.Model(inputs=model.input, outputs=x)
             elif self.orthogonalization == 'zca':
-                x = ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon)(model.output)
+                x = ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon, diag_offset = self.diag_offset)(model.output)
                 model = keras.Model(inputs=model.input, outputs=x)
             else:
                 print('Orthogonalization mode not recognised, must be "Moore-Penrose" or "zca"')
@@ -210,6 +207,7 @@ class StructuralModel(keras.Model):
         grads = tape.gradient(loss, trainable_vars)
         model.optimizer.apply_gradients(zip(grads, trainable_vars))
         corr = self.corr_metric(y, y_pred, vie)
+
         return loss, mse_loss, corr
 
     def _step_torch(self, vie, inputs_v, y, scale_fact):
@@ -281,6 +279,7 @@ class StructuralModel(keras.Model):
         total_loss = [None] * len(self.model_list)
         total_CC   = [None] * len(self.model_list)
         total_mse  = [None] * len(self.model_list)
+        total_redundancy = [None] * len(self.model_list)
 
         inputs_nested = self.organize_inputs_by_model(inputs)
         
@@ -297,15 +296,18 @@ class StructuralModel(keras.Model):
             total_loss[vie] = ops.sum(loss)
             total_CC[vie]   = corr
             total_mse[vie]  = mse_loss
+            total_redundancy[vie] = self.calculate_redundancy(y[:,:,vie])
 
         self.loss_tracker_total.update_state(ops.stack(total_loss))
         self.corr_tracker.update_state(ops.stack(total_CC))
         self.loss_tracker_mse.update_state(ops.stack(total_mse))
+        self.loss_tracker_redundancy.update_state(ops.stack(total_redundancy))
 
         return {
             "total_loss": self.loss_tracker_total.result(),
             "cross_metric": self.corr_tracker.result(),
             "mse_loss": self.loss_tracker_mse.result(),
+            "redundancy": self.loss_tracker_redundancy.result()
         }
 
 
@@ -320,8 +322,6 @@ class StructuralModel(keras.Model):
         super().compile()
         
         #self.global_build()
-        
-
 
         if isinstance(optimizer, list):
             for vie in range(len(self.model_list)):
@@ -335,9 +335,9 @@ class StructuralModel(keras.Model):
 
 
     def test_step(self, inputs):
-        #     """ This step is called by model.evaluate() on a batch-wise level. This function
-        #     returns loss metrics for the test data.
-        #     """
+        """ This step is called by model.evaluate() on a batch-wise level. This function
+        returns loss metrics for the test data.
+        """
 
         inputs = inputs[0]
         y = self(inputs, training=False)
@@ -345,6 +345,7 @@ class StructuralModel(keras.Model):
         total_loss = [None] * len(self.model_list)
         total_CC = [None] * len(self.model_list)
         total_mse = [None] * len(self.model_list)
+        total_redundancy = [None] * len(self.model_list)
 
         inputs_nested = self.organize_inputs_by_model(inputs)
 
@@ -355,24 +356,31 @@ class StructuralModel(keras.Model):
             internal_loss = self.model_list[vie].losses
             loss = mse_loss + internal_loss
 
-            corr_metric = self.corr_metric(y, y_pred, vie)
+            corr = self.corr_metric(y, y_pred, vie)
 
             total_loss[vie] = ops.sum(loss)
-            total_CC[vie] = corr_metric
-            total_mse[vie] = mse_loss
+            total_CC[vie]   = corr
+            total_mse[vie]  = mse_loss
+            total_redundancy[vie] = self.calculate_redundancy(y[:,:,vie])
 
-        # Keep your original update_state calls unchanged
-        self.loss_tracker_total.update_state(total_loss)
-        self.corr_tracker.update_state(total_CC)
-        self.loss_tracker_mse.update_state(total_mse)
+        self.loss_tracker_total.update_state(ops.stack(total_loss))
+        self.corr_tracker.update_state(ops.stack(total_CC))
+        self.loss_tracker_mse.update_state(ops.stack(total_mse))
+        self.loss_tracker_redundancy.update_state(ops.stack(total_redundancy))
 
-        return {m.name: m.result() for m in self.metrics}
+        return {
+            "total_loss": self.loss_tracker_total.result(),
+            "cross_metric": self.corr_tracker.result(),
+            "mse_loss": self.loss_tracker_mse.result(),
+            "redundancy": self.loss_tracker_redundancy.result()
+        }
+
 
     @property
     def metrics(self):
-        # We list our `Metric` objects here so that `reset_states()` can be
-        # called automatically at the start of each epoch
-        # or at the start of `evaluate()`.
+        """We list our `Metric` objects here so that `reset_states()` can be
+        called automatically at the start of each epoch
+        or at the start of `evaluate()`."""
 
         return [self.loss_tracker_total, self.corr_tracker, self.loss_tracker_mse]
 
@@ -430,6 +438,51 @@ class StructuralModel(keras.Model):
         corr_mean = ops.sum(corr_masked) / (n_conn_safe * float(self.ndims))
 
         return corr_mean
+
+    def calculate_redundancy(self, X, epsilon=1e-8):
+        """
+        Args:
+            X: Tensor / KerasTensor, shape (N, D). Each column is a variable.
+            epsilon: Small constant for numerical stability.
+
+        Returns:
+            Scalar tensor: mean(|corr(i, j)|) over all i != j.
+        """
+        X = ops.convert_to_tensor(X)
+        X = ops.cast(X, "float32")
+
+        # Center columns
+        col_mean = ops.mean(X, axis=0, keepdims=True)
+        Xc = X - col_mean
+
+        # Sample-size for covariance
+        n = ops.shape(Xc)[0]
+        n_f = ops.cast(n, X.dtype)
+        denom_n = ops.maximum(n_f - 1.0, 1.0)  # guard when N == 1
+
+        # Covariance between columns: (D x D)
+        cov = ops.matmul(ops.transpose(Xc), Xc) / denom_n
+
+        # Column std devs (D,)
+        var = ops.sum(Xc * Xc, axis=0) / denom_n
+        std = ops.sqrt(ops.maximum(var, epsilon))
+
+        # Correlation matrix: cov / (std_i * std_j)
+        std_col = ops.reshape(std, (-1, 1))              # (D,1)
+        denom = std_col * ops.transpose(std_col)         # (D,D)
+        corr = cov / ops.maximum(denom, epsilon)         # (D,D)
+
+        # Mean absolute correlation over off-diagonal entries
+        corr_abs = ops.abs(corr)
+        D = ops.shape(corr_abs)[0]
+        mask = ops.ones_like(corr_abs) - ops.cast(ops.eye(D), corr_abs.dtype)  # zero diagonal
+        total = ops.sum(corr_abs * mask)
+
+        D_f = ops.cast(D, corr_abs.dtype)
+        num_pairs = ops.maximum(D_f * (D_f - 1.0), 1.0)  # count of off-diagonal entries
+
+        return total / num_pairs
+
 
 
     def calculate_corrmat(self, DLVs):
