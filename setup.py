@@ -3,7 +3,7 @@ import setuptools
 
 setuptools.setup(
     name="deep-lvpm",
-    version="0.2.2",
+    version="0.2.3",
     author="Alex James Ing",
     description="Deep Latent Variable Path Modelling (Keras 3, multi-backend)",
     packages=setuptools.find_packages(),
