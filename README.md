@@ -111,3 +111,13 @@ export KERAS_BACKEND=tensorflow   # or: torch
 - `tf-gpu` is **Linux-only** and uses `tensorflow[and-cuda]` (no separate CUDA toolkit install required).
 - `torch-gpu` extra is intentionally empty to avoid pulling CPU wheels from PyPI; always install CUDA-enabled PyTorch first.
 - If multiple backends are installed, Keras will pick one; use `KERAS_BACKEND` to force your choice.
+
+## Tutorials & Metrics
+
+Three turnkey tutorials ship with the toolbox and default to the TensorFlow backend. Launch them with:
+
+- `python -m deep_lvpm.tutorial.tutorial_mnist_tf` – associate MNIST images with labels and visualise the latent space.
+- `python -m deep_lvpm.tutorial.tutorial_tcga_tf` – integrate five TCGA lung cancer modalities using residual encoders.
+- `python -m deep_lvpm.tutorial.tutorial_siamese_tf` – train a Siamese encoder on CIFAR-10 and probe the embeddings linearly.
+
+All tutorials report the expanded `StructuralModel.evaluate` metrics (`total_loss`, `cross_metric`, `mse_loss`, and `redundancy`) introduced in this release so you can monitor both cross-view alignment and within-view redundancy.

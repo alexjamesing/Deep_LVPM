@@ -1,4 +1,32 @@
-tensorflow==2.16.2
-pydot
-scikit-learn
-matplotlib
+keras==3.10.0
+pydot==4.0.1
+scikit-learn==1.6.1
+matplotlib==3.9.4
+
+[tf-apple]
+
+[tf-apple:platform_system == "Darwin" and platform_machine == "arm64"]
+tensorflow-macos==2.16.2
+tensorflow-metal==1.2.0
+
+[tf-cpu]
+tensorflow==2.20.0
+
+[tf-gpu]
+
+[tf-gpu:platform_system == "Linux"]
+tensorflow[and-cuda]==2.20.0
+
+[torch-apple]
+
+[torch-apple:platform_system == "Darwin" and platform_machine == "arm64"]
+torch==2.8.0
+torchvision==0.23.0
+torchaudio==2.8.0
+
+[torch-cpu]
+torch==2.8.0
+torchvision==0.23.0
+torchaudio==2.8.0
+
+[torch-gpu]

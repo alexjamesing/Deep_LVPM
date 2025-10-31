@@ -10,12 +10,6 @@ deep_lvpm/layers/ConfoundLayer.py
 deep_lvpm/layers/FactorLayer.py
 deep_lvpm/layers/ZCALayer.py
 deep_lvpm/layers/__init__.py
-deep_lvpm/models/Siamese.py
-deep_lvpm/models/SiameseBarlow.py
-deep_lvpm/models/SiameseTwins.py
-deep_lvpm/models/SiameseTwinsBarlow.py
-deep_lvpm/models/SiameseTwinsVicReg.py
-deep_lvpm/models/SiameseVicReg.py
 deep_lvpm/models/StructuralModel.py
 deep_lvpm/models/__init__.py
 deep_lvpm/tutorial/__init__.py

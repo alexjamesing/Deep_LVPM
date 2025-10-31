@@ -1,7 +1,7 @@
 StructuralModel
 ===============
 
-The :class:`deep_lvpm.models.StructuralModel.StructuralModel` class is the core of the DLVPM toolbox.  It inherits from ``tf.keras.Model`` and coordinates multiple **measurement models** (one per data view) together with a binary **path model** that specifies how latent factors are connected across views.  During training, the model learns sets of orthogonal deep latent variables (DLVs) that maximise correlation between the outputs of the measurement models while respecting the path structure.
+The :class:`deep_lvpm.models.StructuralModel.StructuralModel` class is the core of the DLVPM toolbox.  It inherits from :class:`keras.Model` (Keras 3) and coordinates multiple **measurement models** (one per data view) together with a binary **path model** that specifies how latent factors are connected across views.  During training, the model learns sets of orthogonal deep latent variables (DLVs) that maximise correlation between the outputs of the measurement models while respecting the path structure.  The implementation is backend-agnostic and works with either TensorFlow or PyTorch; the tutorials in this release default to TensorFlow.
 
 Parameters
 ----------
@@ -42,9 +42,10 @@ A :class:`StructuralModel` instance exposes several public attributes:
 * **regularizer_list** – list of regularisers for projection layers.
 * **tot_num** – total number of samples.
 * **ndims** – number of latent variables.
-* **loss_tracker_total** – Keras metric tracking total loss during training.
-* **corr_tracker** – Keras metric tracking the average correlation between connected views.
-* **loss_tracker_mse** – Keras metric tracking mean squared error.
+* **loss_tracker_total** – average total loss across views.
+* **corr_tracker** – mean Pearson correlation between connected views (“cross metric”).
+* **loss_tracker_mse** – reconstruction mean squared error.
+* **loss_tracker_redundancy** – redundancy score capturing within-view correlation between discovered DLVs.
 
 Common methods
 --------------
@@ -67,7 +68,7 @@ Because :class:`StructuralModel` subclasses ``tf.keras.Model``, it supports the 
     Trains the model on a list or generator of data arrays.  The input ``data`` should be a list of arrays, one per view.  Additional arguments (``batch_size``, ``epochs``, callbacks, etc.) behave as in Keras.
 
 ``evaluate(data)``
-    Evaluates the model on input data and returns a list ``[mse, correlation]``, where ``mse`` is the mean squared error and ``correlation`` is the mean Pearson correlation between connected views.
+    Evaluates the model on input data and returns a dictionary with four entries: ``total_loss``, ``cross_metric`` (mean correlation), ``mse_loss``, and ``redundancy``.  All values are per-view averages computed over the evaluation dataset.
 
 ``predict(data)``
     Computes the deep latent variables for each view, returning a tensor of shape ``(n_samples, ndims, n_views)``.  To extract the latent variables for an individual view use ``struct_model.model_list[i].predict(data[i])``.

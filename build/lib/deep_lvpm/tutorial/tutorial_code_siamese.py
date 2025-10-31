@@ -1,163 +1,242 @@
-# import all necessary packages required for this tutorial
+import os
+import random
+
+# # Configure TensorFlow runtime to favour deterministic, memory-efficient execution.
+# os.environ.update({
+#     "TF_XLA_FLAGS": "--tf_xla_auto_jit=0",
+#     "XLA_FLAGS": "--xla_gpu_strict_conv_algorithm_picker=false",
+#     "TF_FORCE_GPU_ALLOW_GROWTH": "true",
+#     "TF_DETERMINISTIC_OPS": "1",
+#     "TF_CUDNN_DETERMINISTIC": "1",
+#     "TF_CUDNN_AUTOTUNE_DEFAULT": "0",
+#     "TF_CUDNN_USE_FRONTEND": "0",
+#     "NVIDIA_TF32_OVERRIDE": "0",
+# })
+
+import numpy as np
 import tensorflow as tf
-import numpy as np
-import deep_lvpm
 from tensorflow import keras
-from keras import layers
-import numpy as np
-from sklearn.manifold import TSNE
-import matplotlib.pyplot as plt
-from deep_lvpm.models.Siamese import Siamese ## Here, we import the main StructuralModel class used in deep-lvpm
-from deep_lvpm.models.SiameseVicReg import SiameseVicReg ## Here, we import the main StructuralModel class used in deep-lvpm
-from deep_lvpm.models.StructuralModel import StructuralModel ## Here, we import the main StructuralModel class used in deep-lvpm
-from deep_lvpm.models.SiameseBarlow import SiameseBarlow ## Here, we import the main StructuralModel class used in deep-lvpm
+from keras import layers, mixed_precision, Sequential
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from deep_lvpm.models.StructuralModel import StructuralModel
 
-#tf.config.run_functions_eagerly(True)
+print("TensorFlow:", tf.__version__)
+print("Physical GPUs:", tf.config.list_physical_devices("GPU"))
+print("Logical GPUs:",  tf.config.list_logical_devices("GPU"))
 
-# Model / data parameters
-num_classes = 10
-input_shape = (28, 28, 1)
+# Keep computations in float32 for stability with the siamese objective.
+mixed_precision.set_global_policy("float32")
 
-# Load the data and split it between train and test sets
-(x_train, y_train_cat), (x_test, y_test_cat) = keras.datasets.mnist.load_data()
+# Enable on-demand GPU allocation so TensorFlow does not grab all memory up front.
+for device in tf.config.list_physical_devices("GPU"):
+    try:
+        tf.config.experimental.set_memory_growth(device, True)
+    except Exception:
+        pass
 
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
+# Use graph execution for performance.
+tf.config.run_functions_eagerly(False)
 
-# Reshape data to add channel dimension (1, for grayscale)
-x_train = x_train.reshape(-1, 28, 28, 1)
-x_test = x_test.reshape(-1, 28, 28, 1)
+# Define core dataset metadata.
+NUM_CLASSES = 10
+INPUT_SHAPE = (32, 32, 3)
 
-# Create an image data generator for augmentation
-datagen = ImageDataGenerator(
-    rotation_range=50,
-    zoom_range=0.3,
-    width_shift_range=0.5,
-    height_shift_range=0.5)
+# Load CIFAR-10 and flatten label arrays.
+(x_train, y_train_cat), (x_test, y_test_cat) = keras.datasets.cifar10.load_data()
+y_train_cat = y_train_cat.squeeze()
+y_test_cat = y_test_cat.squeeze()
 
-# Normalizing dataset
-x_train = x_train.astype('float32') / 255
-x_test = x_test.astype('float32') / 255
+# Normalise images to [0, 1] so the model trains stably.
+x_train = x_train.astype("float32") / 255.0
+x_test = x_test.astype("float32") / 255.0
 
+# Prepare one-hot encodings for downstream evaluation (and compatibility with other DLVPM code paths).
+y_train = keras.utils.to_categorical(y_train_cat, NUM_CLASSES)
+y_test = keras.utils.to_categorical(y_test_cat, NUM_CLASSES)
 
-def pair_generator(x_train, batch_size):
-    datagen = ImageDataGenerator(
-        rotation_range=20,
-        zoom_range=0.1,
-        width_shift_range=0.1,
-        height_shift_range=0.1)
-    while True:
-        idx = np.random.choice(np.arange(len(x_train)), batch_size)
-        batch = x_train[idx]
-        batch_1 = datagen.flow(batch, batch_size=batch_size, shuffle=False).next()
-        batch_2 = datagen.flow(batch, batch_size=batch_size, shuffle=False).next()
-        
-       
-        yield ([[batch_1, batch_2]],)
+# Fix seeds to keep runs reproducible.
+SEED = 1337
+random.seed(SEED)
+np.random.seed(SEED)
+tf.keras.utils.set_random_seed(SEED)
 
+# Split training set into train/validation partitions.
+VAL_FRACTION = 0.1
+num_train = x_train.shape[0]
+indices = np.arange(num_train)
+rng = np.random.default_rng(SEED)
+rng.shuffle(indices)
+cutoff = int(num_train * (1 - VAL_FRACTION))
+x_tr, x_val = x_train[indices[:cutoff]], x_train[indices[cutoff:]]
 
-# convert class vectors to binary class matrices
-y_train = keras.utils.to_categorical(y_train_cat, num_classes)
-y_test = keras.utils.to_categorical(y_test_cat, num_classes)
-
-data_train_list = [x_train, y_train]
-data_test_list = [x_test, y_test]
-
-MNIST_image_model = keras.Sequential(
+# Build stochastic augmentation pipeline used to form siamese views.
+AUTOTUNE = tf.data.AUTOTUNE
+BATCH_SIZE = 2048
+augment = Sequential(
     [
-        keras.Input(shape=input_shape),
-        layers.Conv2D(32, kernel_size=(3, 3), activation="relu"),
-        layers.MaxPooling2D(pool_size=(2, 2)),
-        layers.Conv2D(64, kernel_size=(3, 3), activation="relu"),
-        layers.MaxPooling2D(pool_size=(2, 2)),
-        layers.Flatten(),
-        #layers.BatchNormalization(),
-        layers.Dense(500)
-
-        #layers.Dense(100),
-        #layers.BatchNormalization(),
-        #layers.Dropout(0.8)
-
-    ]
+        layers.RandomCrop(24, 24),
+        layers.Resizing(32, 32),
+        layers.RandomFlip("horizontal"),
+        layers.Lambda(
+            lambda x: tf.where(
+                tf.random.uniform([tf.shape(x)[0], 1, 1, 1]) < 0.2,
+                tf.tile(tf.image.rgb_to_grayscale(x), [1, 1, 1, 3]),
+                x,
+            )
+        ),
+    ],
+    name="augment",
 )
 
-# data_input = keras.Input(shape = 10)
-# MNIST_label_model=keras.Model(inputs=data_input,outputs=data_input)
-  
-model_list = [MNIST_image_model, MNIST_image_model] 
 
-# # Here, we define a new adjacency matrix, which defines which data views to connect
-Path = tf.constant([[0,1],
-             [1,0]])
+def make_siamese_views_dataset(x, batch_size=256, shuffle=True, training=True):
+    """Return a dataset that yields pairs of augmented views."""
+    ds = tf.data.Dataset.from_tensor_slices(x)
+    if shuffle:
+        ds = ds.shuffle(len(x), seed=SEED, reshuffle_each_iteration=True)
+    ds = ds.batch(int(batch_size), drop_remainder=training)
 
-regularizer_list = [keras.regularizers.l1_l2(l1=1e-4, l2=1e-4),keras.regularizers.l1_l2(l1=1e-4, l2=1e-4)] ## regularizer_list 
+    def map_batch(batch):
+        # Apply independent augmentations to create positive pairs.
+        view_one = augment(batch, training=training)
+        view_two = augment(batch, training=training)
+        return ([view_one, view_two],)
 
-ndims = 500 # the number of DLVs we wish to extract
-tot_num = x_train.shape[0] # the total number of samples, which is used for internal normalisation
-#tot_num = 100
-batch_size = 32
-epochs = 1
-
-DLVPM_Model = Siamese(Path, model_list, regularizer_list, tot_num, ndims, momentum=0.8)
-#DLVPM_Model = SiameseVicReg(Path, model_list, regularizer_list, tot_num, ndims)
-#DLVPM_Model = SiameseBarlow(Path, model_list, regularizer_list, tot_num, ndims)
-
-optimizer_list = [keras.optimizers.Adam(learning_rate=1e-5),keras.optimizers.Adam(learning_rate=1e-5)]
-
-DLVPM_Model.compile(optimizer=optimizer_list)
-
-DLVPM_Model.fit(pair_generator(x_train, batch_size=2048), steps_per_epoch = 400,epochs=1)
-
-image_model = DLVPM_Model.model_list[0]
-
-DLVs_train = image_model.predict(x_train)
-
-DLVs_test = image_model.predict(x_test)
-
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense
-from tensorflow.keras.optimizers import Adam
-
-# Define a simple Sequential model for classification
-model = Sequential([
-    Dense(num_classes, activation='sigmoid',input_shape=(DLVs_train.shape[1],))  # Using sigmoid for binary classification
-])
-
-# Compile the model
-model.compile(optimizer=Adam(), loss='binary_crossentropy', metrics=['accuracy'])
-
-# Train the model
-history = model.fit(DLVs_train, y_train, validation_data=(DLVs_test, y_test), epochs=10, batch_size=32)
-
-# Evaluate the model
-loss, accuracy = model.evaluate(DLVs_test, y_test)
-print(f'Test loss: {loss}, Test accuracy: {accuracy}')
-
-# #DLVPM_Model.save('output_folder/DLVPM_Model.keras')
-
-# image_DLVs = DLVPM_Model.model_list[0].predict(data_test_list[0])
-
-# ## Here, we randomy select 100 examples for plotting
-# random_indices = np.random.choice(image_DLVs.shape[0], size=100, replace=False)
-
-# image_DLVs_plot = image_DLVs[random_indices,:]
-# y_test_plot = y_test[random_indices,:]
-
-# # Apply t-SNE
-# tsne = TSNE(n_components=2, random_state=42)
-# tsne_results = tsne.fit_transform(image_DLVs_plot)
-
-# # Plot
-# plt.figure(figsize=(12, 8))
-
-# for i in range(y_test_plot.shape[1]):
-#     points = tsne_results[y_test_plot[:, i] == 1]
-#     plt.scatter(points[:, 0], points[:, 1], label=f'Category {i+1}')
-
-# plt.title('t-SNE projection of the dataset')
-# plt.legend()
-# plt.savefig('/Users/ing/Downloads/figure_out.png')
-# plt.show()
+    return ds.map(map_batch, num_parallel_calls=AUTOTUNE).prefetch(AUTOTUNE)
 
 
+# Create datasets for siamese training.
+train_ds = make_siamese_views_dataset(
+    x_tr, batch_size=BATCH_SIZE, shuffle=True, training=True
+)
+val_ds = make_siamese_views_dataset(
+    x_val, batch_size=BATCH_SIZE, shuffle=False, training=False
+)
+
+# Build the shared encoder used by both branches of the structural model.
+WEIGHT_DECAY = 0.0
+NDIMS = 4096
+CIFAR_image_model = keras.Sequential(
+    [
+        keras.Input(shape=INPUT_SHAPE),
+        layers.Conv2D(
+            64,
+            3,
+            padding="same",
+            activation="relu",
+            kernel_regularizer=keras.regularizers.l2(WEIGHT_DECAY),
+        ),
+        layers.MaxPooling2D(2),
+        layers.Conv2D(
+            128,
+            3,
+            padding="same",
+            activation="relu",
+            kernel_regularizer=keras.regularizers.l2(WEIGHT_DECAY),
+        ),
+        layers.MaxPooling2D(2),
+        layers.Conv2D(
+            256,
+            3,
+            padding="same",
+            activation="relu",
+            kernel_regularizer=keras.regularizers.l2(WEIGHT_DECAY),
+        ),
+        layers.GlobalAveragePooling2D(),
+        layers.Dense(512),
+        layers.BatchNormalization(),
+        layers.Dense(NDIMS),
+        layers.BatchNormalization(),
+        layers.ReLU(),
+        layers.Dense(NDIMS),
+        layers.BatchNormalization(),
+    ],
+    name="cifar_image_model",
+)
+
+# Build siamese structural model with shared encoder replicas.
+model_list = [CIFAR_image_model, CIFAR_image_model]
+adjacency = tf.constant([[0, 1], [1, 0]], dtype="float32")
+regularizers = [None, None]
+
+dlvpm_model = StructuralModel(
+    adjacency,
+    model_list,
+    regularizers,
+    x_train.shape[0],
+    NDIMS,
+    orthogonalization="zca",
+    train_DLV=True,
+    is_siamese=True,
+    diag_offset=1e-4,
+)
+
+# Compile with branch-specific optimisers.
+optimizers = [
+    keras.optimizers.Adam(learning_rate=1e-4),
+    keras.optimizers.Adam(learning_rate=1e-4),
+]
+dlvpm_model.compile(optimizers)
+
+# Train the siamese model and monitor validation performance.
+EPOCHS = 500
+dlvpm_model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, verbose=True)
 
 
+def remove_last_layers(model: keras.Model, n: int = 1, name: str | None = None) -> keras.Model:
+    """Return a copy of `model` without its final `n` layers."""
+    if not isinstance(n, int) or n < 0:
+        raise ValueError("n must be a non-negative integer")
+    if n == 0:
+        return model
+    total_layers = len(model.layers)
+    if n >= total_layers:
+        raise ValueError(f"n ({n}) must be < number of layers ({total_layers})")
+    cutoff_layer = model.layers[total_layers - n - 1]
+    new_outputs = cutoff_layer.output
+    return keras.Model(
+        inputs=model.inputs, outputs=new_outputs, name=name or f"{model.name}_minus{n}"
+    )
+
+
+# Strip the projection head before exporting embeddings.
+image_model = remove_last_layers(dlvpm_model.model_list[0], n=7)
+
+# Generate embeddings for downstream linear evaluation.
+train_dlvs = image_model.predict(x_train, batch_size=32, verbose=1)
+test_dlvs = image_model.predict(x_test, batch_size=32, verbose=1)
+
+print(f"Train DLVs shape: {train_dlvs.shape}")
+print(f"Test  DLVs shape: {test_dlvs.shape}")
+
+# Train a linear classifier directly on the embeddings.
+linear_classifier = keras.Sequential(
+    [
+        keras.Input(shape=(train_dlvs.shape[1],)),
+        layers.Dense(NUM_CLASSES, activation="softmax"),
+    ],
+    name="linear_classifier",
+)
+linear_classifier.compile(
+    optimizer=keras.optimizers.Adam(learning_rate=1e-3),
+    loss=keras.losses.CategoricalCrossentropy(),
+    metrics=[keras.metrics.CategoricalAccuracy(name="accuracy")],
+)
+linear_classifier.fit(
+    train_dlvs,
+    y_train,
+    validation_split=VAL_FRACTION,
+    epochs=50,
+    batch_size=256,
+    verbose=2,
+)
+
+probabilities = linear_classifier.predict(test_dlvs, batch_size=256, verbose=1)
+predictions = np.argmax(probabilities, axis=1)
+accuracy = accuracy_score(y_test_cat, predictions)
+
+print(f"\nLinear classifier accuracy on CIFAR-10 test set: {accuracy:.4f}\n")
+print("Classification report:")
+print(classification_report(y_test_cat, predictions, digits=4))
+print("Confusion matrix:")
+print(confusion_matrix(y_test_cat, predictions))
