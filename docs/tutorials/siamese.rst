@@ -121,7 +121,7 @@ Install :mod:`deep_lvpm` with one of the TensorFlow extras and set ``KERAS_BACKE
 
    seed = 1337
    batch_size = 512
-   epochs = 50
+   epochs = 500
 
    rng = np.random.default_rng(seed)
    indices = rng.permutation(len(x_train))
@@ -175,5 +175,7 @@ Install :mod:`deep_lvpm` with one of the TensorFlow extras and set ``KERAS_BACKE
    predictions = np.argmax(probabilities, axis=1)
    accuracy = float((predictions == y_test_cat).mean())
    print(f"Linear probe accuracy on CIFAR-10 test set: {accuracy:.4f}")
+
+With the default hyperparameters and 500 training epochs, you should expect a linear probe accuracy in the region of **60 %**. Small variations are normal depending on hardware, random seeds, and augmentation randomness.
 
 This workflow highlights the additional ``redundancy`` metric exposed by :meth:`StructuralModel.evaluate` and demonstrates how to reuse the learned DLVPM encoder for downstream tasks.

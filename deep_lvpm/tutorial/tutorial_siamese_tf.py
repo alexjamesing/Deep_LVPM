@@ -115,7 +115,7 @@ if __name__ == "__main__":
     x_tr, x_val = x_train[indices[:cutoff]], x_train[indices[cutoff:]]
 
     batch_size = 512
-    epochs = 50
+    epochs = 500
 
     augment = _make_augmenter()
     train_ds = _make_dataset(x_tr, batch_size=batch_size, seed=seed, augment=augment, training=True)
