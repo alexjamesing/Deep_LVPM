@@ -112,6 +112,17 @@ export KERAS_BACKEND=tensorflow   # or: torch
 - `torch-gpu` extra is intentionally empty to avoid pulling CPU wheels from PyPI; always install CUDA-enabled PyTorch first.
 - If multiple backends are installed, Keras will pick one; use `KERAS_BACKEND` to force your choice.
 
+## Continuous Integration checks
+
+Pushes and pull requests trigger the `Validate installation extras` workflow
+defined in [`.github/workflows/install-matrix.yml`](.github/workflows/install-matrix.yml).
+GitHub Actions spins up Linux, macOS, and Windows runners, installs the
+project with each backend extra, and verifies that `deep_lvpm` and the
+corresponding TensorFlow or PyTorch modules import cleanly. Visit the
+repository's **Actions** tab to inspect run logs, rerun failed jobs, or launch
+the workflow manually. The new [Continuous Integration](docs/ci.rst) page in
+the documentation expands on how the matrix works and how to customise it.
+
 ## Tutorials & Metrics
 
 Three turnkey tutorials ship with the toolbox and default to the TensorFlow backend. Launch them with:

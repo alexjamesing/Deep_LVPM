@@ -10,6 +10,7 @@ Deep Latent Variable Path Modelling (DLVPM) is a method for multi‑view data in
 
    introduction
    installation
+   ci
    tutorials/mnist
    tutorials/tcga
    tutorials/siamese
