@@ -1,15 +1,18 @@
-Siamese CIFAR-10 Tutorial
-=========================
+Siamese CIFAR-10 Tutorial (TensorFlow)
+======================================
 
-This tutorial shows how to train a Siamese Deep LVPM model on the CIFAR‑10 dataset using the TensorFlow backend.  Two augmented views of each image are passed through identical convolutional encoders, and the resulting deep latent variables are evaluated with a linear probe.
+This tutorial expands ``deep_lvpm/tutorial/tutorial_siamese_tf.py`` with step-by-step commentary.  We build a Siamese Deep LVPM model that learns correlated representations from two augmented views of each CIFAR-10 image and validate the embeddings with a linear probe.
 
 Prerequisites
 -------------
 
-Install :mod:`deep_lvpm` with one of the TensorFlow extras and set ``KERAS_BACKEND=tensorflow``.  The tutorial benefits from a GPU but can run on CPU with longer training time.
+* Install :mod:`deep_lvpm` with TensorFlow support and set ``KERAS_BACKEND=tensorflow``.
+* A GPU is recommended—the tutorial runs for 500 epochs—but the sample code still executes on CPU with longer training times.
 
-1. Prepare the data and augmentation pipeline
----------------------------------------------
+Step 1 – Environment configuration
+----------------------------------
+
+We lock the global precision policy to float32 and enable memory growth on detected GPUs to avoid allocation spikes.  This mirrors the initial setup in the script.
 
 .. code-block:: python
 
@@ -18,9 +21,28 @@ Install :mod:`deep_lvpm` with one of the TensorFlow extras and set ``KERAS_BACKE
    import tensorflow as tf
    import keras
    from keras import layers
+   from keras.optimizers import Adam
+   from keras.mixed_precision import set_global_policy
+
+   from deep_lvpm.models.StructuralModel import StructuralModel
 
    os.environ.setdefault("KERAS_BACKEND", "tensorflow")
-   keras.config.run_eagerly(False)
+
+   set_global_policy("float32")
+   tf.config.run_functions_eagerly(False)
+
+   for device in tf.config.list_physical_devices("GPU"):
+       try:
+           tf.config.experimental.set_memory_growth(device, True)
+       except Exception:
+           pass
+
+Step 2 – Load CIFAR-10 and prepare one-hot labels
+-------------------------------------------------
+
+The loader returns labels shaped ``(n, 1)``; squeeze them before creating one-hot matrices.
+
+.. code-block:: python
 
    (x_train, y_train_cat), (x_test, y_test_cat) = keras.datasets.cifar10.load_data()
    x_train = x_train.astype("float32") / 255.0
@@ -31,23 +53,40 @@ Install :mod:`deep_lvpm` with one of the TensorFlow extras and set ``KERAS_BACKE
    y_train = keras.utils.to_categorical(y_train_cat, 10)
    y_test = keras.utils.to_categorical(y_test_cat, 10)
 
-   augment = keras.Sequential(
-       [
-           layers.RandomCrop(24, 24),
-           layers.Resizing(32, 32),
-           layers.RandomFlip("horizontal"),
-           layers.Lambda(
-               lambda x: tf.where(
-                   tf.random.uniform([tf.shape(x)[0], 1, 1, 1]) < 0.2,
-                   tf.tile(tf.image.rgb_to_grayscale(x), [1, 1, 1, 3]),
-                   x,
-               )
-           ),
-       ],
-       name="cifar_augment",
-   )
+   seed = 1337
+   rng = np.random.default_rng(seed)
+   indices = rng.permutation(len(x_train))
+   cutoff = int(len(x_train) * 0.9)
+   x_tr, x_val = x_train[indices[:cutoff]], x_train[indices[cutoff:]]
 
-   def make_dataset(images, batch_size, seed, training):
+   batch_size = 512
+   epochs = 500
+
+Step 3 – Build the augmentation pipeline and datasets
+-----------------------------------------------------
+
+Two augmented views are required for Siamese training.  We re-use the augmentation model from the script and wrap the arrays in ``tf.data`` pipelines for efficient batching.
+
+.. code-block:: python
+
+   def make_augmenter() -> keras.Sequential:
+       return keras.Sequential(
+           [
+               layers.RandomCrop(24, 24),
+               layers.Resizing(32, 32),
+               layers.RandomFlip("horizontal"),
+               layers.Lambda(
+                   lambda x: tf.where(
+                       tf.random.uniform([tf.shape(x)[0], 1, 1, 1]) < 0.2,
+                       tf.tile(tf.image.rgb_to_grayscale(x), [1, 1, 1, 3]),
+                       x,
+                   )
+               ),
+           ],
+           name="cifar_augment",
+       )
+
+   def make_dataset(images, batch_size, seed, augment, training):
        autotune = tf.data.AUTOTUNE
        ds = tf.data.Dataset.from_tensor_slices(images)
        if training:
@@ -61,21 +100,16 @@ Install :mod:`deep_lvpm` with one of the TensorFlow extras and set ``KERAS_BACKE
 
        return ds.map(map_batch, num_parallel_calls=autotune).prefetch(autotune)
 
-2. Build the shared encoder and Siamese StructuralModel
--------------------------------------------------------
+   augment = make_augmenter()
+   train_ds = make_dataset(x_tr, batch_size=batch_size, seed=seed, augment=augment, training=True)
+   val_ds = make_dataset(x_val, batch_size=batch_size, seed=seed, augment=augment, training=False)
+
+Step 4 – Construct the shared encoder and StructuralModel
+---------------------------------------------------------
+
+Both branches share the same CNN encoder.  Setting ``is_siamese=True`` in the StructuralModel constructor ensures weights are shared when the FactorLayer is appended.
 
 .. code-block:: python
-
-   from keras.optimizers import Adam
-   from keras.mixed_precision import set_global_policy
-   from deep_lvpm.models.StructuralModel import StructuralModel
-
-   set_global_policy("float32")
-   for device in tf.config.list_physical_devices("GPU"):
-       try:
-           tf.config.experimental.set_memory_growth(device, True)
-       except Exception:
-           pass
 
    encoder = keras.Sequential(
        [
@@ -114,35 +148,30 @@ Install :mod:`deep_lvpm` with one of the TensorFlow extras and set ``KERAS_BACKE
    optimisers = [Adam(learning_rate=1e-4), Adam(learning_rate=1e-4)]
    siamese_model.compile(optimizer=optimisers)
 
-3. Train and monitor metrics
-----------------------------
+Step 5 – Train and track metrics
+--------------------------------
+
+The ``evaluate`` method returns the familiar metrics dictionary (``total_loss``, ``cross_metric``, ``mse_loss``, ``redundancy``).  Printing the dictionary helps monitor how redundancy drops over time.
 
 .. code-block:: python
-
-   seed = 1337
-   batch_size = 512
-   epochs = 500
-
-   rng = np.random.default_rng(seed)
-   indices = rng.permutation(len(x_train))
-   cutoff = int(len(x_train) * 0.9)
-   x_tr, x_val = x_train[indices[:cutoff]], x_train[indices[cutoff:]]
-
-   train_ds = make_dataset(x_tr, batch_size=batch_size, seed=seed, training=True)
-   val_ds = make_dataset(x_val, batch_size=batch_size, seed=seed, training=False)
 
    history = siamese_model.fit(train_ds, validation_data=val_ds, epochs=epochs, verbose=True)
-   metrics = siamese_model.evaluate(val_ds, verbose=False)
-   print({name: float(value) for name, value in metrics.items()})
+   val_metrics = siamese_model.evaluate(val_ds, verbose=False)
+   print("Validation metrics:", {name: float(value) for name, value in val_metrics.items()})
+   print("Training history keys:", list(history.history))
 
-4. Evaluate the learned representation with a linear probe
-----------------------------------------------------------
+Step 6 – Evaluate the representation with a linear probe
+--------------------------------------------------------
+
+Remove the final normalisation layers from the encoder to expose a compact embedding, then train a small softmax classifier on top.  This is identical to the evaluation block in the tutorial script.
 
 .. code-block:: python
 
-   def remove_last_layers(model, n):
+   def remove_last_layers(model: keras.Model, n: int) -> keras.Model:
        if n == 0:
            return model
+       if n >= len(model.layers):
+           raise ValueError(f"Cannot remove {n} layers from model with only {len(model.layers)} layers.")
        cutoff = model.layers[-(n + 1)].output
        return keras.Model(inputs=model.inputs, outputs=cutoff, name=f"{model.name}_truncated")
 
@@ -176,6 +205,9 @@ Install :mod:`deep_lvpm` with one of the TensorFlow extras and set ``KERAS_BACKE
    accuracy = float((predictions == y_test_cat).mean())
    print(f"Linear probe accuracy on CIFAR-10 test set: {accuracy:.4f}")
 
-With the default hyperparameters and 500 training epochs, you should expect a linear probe accuracy in the region of **60 %**. Small variations are normal depending on hardware, random seeds, and augmentation randomness.
+Next steps
+----------
 
-This workflow highlights the additional ``redundancy`` metric exposed by :meth:`StructuralModel.evaluate` and demonstrates how to reuse the learned DLVPM encoder for downstream tasks.
+* Experiment with different augmentations or encoder depths to see how redundancy and probe accuracy change.
+* Reduce ``epochs`` when prototyping, then scale back up for final experiments.
+* Switch to the PyTorch backend tutorial (see :doc:`mnist_torch`) to explore the alternative implementation style.

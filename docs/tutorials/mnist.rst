@@ -1,181 +1,160 @@
-MNIST Tutorial
-==============
+MNIST Tutorial (TensorFlow)
+===========================
 
-This tutorial demonstrates how to build and train a simple DLVPM model that links greyscale images to dummy‑coded labels in the MNIST dataset.  The goal is to learn deep latent variables that are maximally correlated between the image and label views.
+The MNIST tutorial walks through the complete workflow for a two‑view Deep LVPM model: we pair a convolutional encoder for the greyscale digits with a simple identity encoder for the one‑hot labels, learn highly correlated deep latent variables (DLVs), and visualise the latent space.  The code below mirrors ``deep_lvpm/tutorial/tutorial_mnist_tf.py`` line for line, with additional commentary to unpack each step.
 
 Prerequisites
 -------------
 
-Make sure you have installed :mod:`deep_lvpm` with one of the TensorFlow extras as described on the :doc:`installation` page.  To be explicit about the backend, set ``KERAS_BACKEND=tensorflow`` before running the tutorial.
+* Install :mod:`deep_lvpm` with TensorFlow support (see :doc:`../installation`).
+* Set ``KERAS_BACKEND=tensorflow`` so Keras 3 selects the correct backend.
+* Optional: run on GPU for faster training, although the script finishes quickly on CPU.
 
-1. Prepare the data
--------------------
+Step 1 – Load and prepare MNIST
+-------------------------------
 
-We begin by loading the MNIST dataset using Keras.  Images are scaled to the range [0, 1], expanded to include a channel dimension, and the labels are converted to one‑hot encoded matrices.
+Normalise the pixel values, add a channel dimension so the convolutional layers see ``(28, 28, 1)`` inputs, and convert the labels to one‑hot encodings for the identity view.
 
 .. code-block:: python
 
    import os
    import numpy as np
    import keras
-   from keras import layers
+   from keras import layers, regularizers
+
+   from deep_lvpm.models.StructuralModel import StructuralModel
 
    os.environ.setdefault("KERAS_BACKEND", "tensorflow")
 
    num_classes = 10
    input_shape = (28, 28, 1)
 
-   # Load the data and split it between train and test sets
+   print("Loading MNIST data...")
    (x_train, y_train_cat), (x_test, y_test_cat) = keras.datasets.mnist.load_data()
 
-   # Scale images to [0, 1] and add channel dimension
-   x_train = x_train.astype("float32") / 255
-   x_test  = x_test.astype("float32") / 255
-   x_train = np.expand_dims(x_train, -1)
-   x_test  = np.expand_dims(x_test,  -1)
+   print("Preprocessing images and labels...")
+   x_train = x_train.astype("float32") / 255.0
+   x_test = x_test.astype("float32") / 255.0
+   x_train = np.expand_dims(x_train, axis=-1)  # add channel dimension
+   x_test = np.expand_dims(x_test, axis=-1)
 
-   # Convert labels to one‑hot encoding
    y_train = keras.utils.to_categorical(y_train_cat, num_classes)
-   y_test  = keras.utils.to_categorical(y_test_cat,  num_classes)
+   y_test = keras.utils.to_categorical(y_test_cat, num_classes)
 
-   # Assemble lists of data for DLVPM
-   data_train_list = [x_train, y_train]
-   data_test_list  = [x_test,  y_test]
+   data_train = [x_train, y_train]
+   data_test = [x_test, y_test]
 
-2. Define measurement models
-----------------------------
+Step 2 – Build the measurement models
+-------------------------------------
 
-A DLVPM model requires one **measurement model** per data view.  For the MNIST images we use a small convolutional neural network.  For the dummy‑coded labels we simply define an input layer, because no further processing is required.
+Each view needs a measurement model.  The image encoder is a compact CNN; the label encoder is an identity mapping because the labels are already dummy‑coded.  The ``Sequential.add`` pattern in the script keeps the tutorial procedural and easy to follow.
 
 .. code-block:: python
 
-   from deep_lvpm.models.StructuralModel import StructuralModel
+   print("Building measurement models...")
 
-   # Convolutional encoder for images
-   MNIST_image_model = keras.Sequential(
-       [
-           keras.Input(shape=input_shape),
-           layers.Conv2D(32, kernel_size=(3, 3), activation="relu",
-                         kernel_regularizer=keras.regularizers.l1_l2(l1=1e-5, l2=1e-5)),
-           layers.MaxPooling2D(pool_size=(2, 2)),
-           layers.Conv2D(64, kernel_size=(3, 3), activation="relu",
-                         kernel_regularizer=keras.regularizers.l1_l2(l1=1e-5, l2=1e-5)),
-           layers.MaxPooling2D(pool_size=(2, 2)),
-           layers.Flatten(),
-           layers.Dense(100, activation="relu"),
-           layers.Dropout(0.5),
-       ],
-       name="mnist_image_model",
+   image_encoder = keras.Sequential(name="mnist_image_encoder")
+   image_encoder.add(layers.InputLayer(input_shape=input_shape, name="mnist_image_in"))
+   image_encoder.add(
+       layers.Conv2D(
+           32,
+           (3, 3),
+           activation="relu",
+           kernel_regularizer=regularizers.l1_l2(l1=1e-5, l2=1e-5),
+       )
+   )
+   image_encoder.add(layers.MaxPooling2D((2, 2)))
+   image_encoder.add(
+       layers.Conv2D(
+           64,
+           (3, 3),
+           activation="relu",
+           kernel_regularizer=regularizers.l1_l2(l1=1e-5, l2=1e-5),
+       )
+   )
+   image_encoder.add(layers.MaxPooling2D((2, 2)))
+   image_encoder.add(layers.Flatten())
+   image_encoder.add(layers.Dense(128, activation="relu"))
+   image_encoder.add(layers.Dropout(rate=0.5))
+
+   labels_input = keras.Input(shape=(num_classes,), name="mnist_label_in")
+   labels_output = layers.Activation("linear", name="mnist_label_id")(labels_input)
+   label_encoder = keras.Model(labels_input, labels_output, name="mnist_label_encoder")
+
+Step 3 – Configure the StructuralModel
+--------------------------------------
+
+The path matrix is a 2×2 symmetric grid so each view learns to correlate with the other.  ``tot_num`` should be the size of the full training set; FactorLayer uses it to scale running covariance estimates.
+
+.. code-block:: python
+
+   adjacency = np.array([[0, 1], [1, 0]], dtype="float32")
+   total_examples = x_train.shape[0]
+
+   structural_model = StructuralModel(
+       Path=adjacency,
+       model_list=[image_encoder, label_encoder],
+       regularizer_list=[None, None],
+       tot_num=total_examples,
+       ndims=9,
+       orthogonalization="Moore-Penrose",
+       momentum=0.95,
+       epsilon=1e-4,
+       train_DLV=False,
    )
 
-   # Identity mapping for labels
-   data_input = keras.Input(shape = (10,))
-   data_output = keras.layers.Activation('linear', name='identity')(data_input)
-   MNIST_label_model=keras.Model(inputs=data_input,outputs=data_output)
-  
-   model_list = [MNIST_image_model, MNIST_label_model]
+   print("Compiling StructuralModel...")
+   image_optimizer = keras.optimizers.Adam(learning_rate=1e-4)
+   label_optimizer = keras.optimizers.Adam(learning_rate=1e-4)
+   structural_model.compile(optimizer=[image_optimizer, label_optimizer])
 
-3. Define the structural path matrix
-------------------------------------
+Step 4 – Train and evaluate
+---------------------------
 
-DLVPM models use a binary **path matrix** to specify which latent factors are connected across data views.  For two views the matrix is trivial (each view connects to the other):
+Keras 3 still accepts a list of NumPy arrays for multi-view training.  After the ``fit`` call completes we convert the returned metrics dictionary to regular floats for printing.
 
 .. code-block:: python
 
-   import numpy as np
-
-   Path = np.array([[0, 1],
-                    [1, 0]], dtype="float32")
-
-4. Build and compile the StructuralModel
----------------------------------------
-
-We instantiate :class:`deep_lvpm.models.StructuralModel.StructuralModel` with the path matrix, the measurement models, and optional regularizers.  We must also specify the total number of samples and the dimensionality of the latent space (``ndims``).
-
-.. code-block:: python
-
-   ndims       = 9               # number of deep latent variables
-   tot_num     = x_train.shape[0]   # total number of samples
-   regularizer_list = [None, None]
-
-   DLVPM_Model = StructuralModel(Path, model_list, regularizer_list, tot_num, ndims)
-
-   # Compile the model with one optimiser per view
-   optimizer_list = [
-       keras.optimizers.Adam(learning_rate=1e-4),
-       keras.optimizers.Adam(learning_rate=1e-4),
-   ]
-   DLVPM_Model.compile(optimizer=optimizer_list)
-
-5. Train and evaluate the model
--------------------------------
-
-Training uses the standard Keras ``fit`` interface with a list of data arrays.  After training we evaluate the model on the test set.  The Keras 3 version returns a **dictionary** with four entries: ``total_loss``, ``cross_metric``, ``mse_loss``, and ``redundancy``.
-
-.. code-block:: python
-
-   batch_size = 256
-   epochs     = 10
-
-   # Train the model
-   DLVPM_Model.fit(
-       data_train_list,
-       batch_size=batch_size,
-       epochs=epochs,
+   print("Training...")
+   history = structural_model.fit(
+       data_train,
+       batch_size=256,
+       epochs=20,
        verbose=True,
        validation_split=0.1,
    )
 
-   # Evaluate on the test set
-   metrics = DLVPM_Model.evaluate(data_test_list)
-   print({name: float(value) for name, value in metrics.items()})
+   print("Evaluating on the test split...")
+   metrics = structural_model.evaluate(data_test, verbose=False)
+   metrics = {name: float(value) for name, value in metrics.items()}
+   for metric_name, metric_value in metrics.items():
+       print(f"{metric_name}: {metric_value:.6f}")
 
-6. Inspect the latent space
----------------------------
+Step 5 – Inspect the latent space
+---------------------------------
 
-The ``predict`` method returns a three‑dimensional tensor of shape ``(n_samples, ndims, n_views)`` containing the learned deep latent variables (DLVs).  We can compute correlations between corresponding DLVs across views to verify that they are highly correlated, and we can project the DLVs to two dimensions using t‑SNE to visualise the latent structure.
+``predict`` returns the learned DLV tensor with shape ``(n_samples, ndims, n_views)``.  To visualise the latent structure we extract the image view, sample a subset, and run t‑SNE.
 
 .. code-block:: python
 
-   import numpy as np
    from sklearn.manifold import TSNE
-   import matplotlib.pyplot as plt
 
-   # Predict the latent variables for the test data
-   DLVs = DLVPM_Model.predict(data_test_list)
+   print("Predicting latent representations...")
+   latent = structural_model.predict(data_test, verbose=False)
+   image_latent = structural_model.model_list[0].predict(data_test[0], verbose=False)
 
-   # Correlation matrix between the first latent variable of each view
-   Cmat = np.corrcoef(DLVs[:, 0, :].T)
-   print("Correlation matrix for the first DLV:", Cmat)
-
-   # Extract DLVs from a single view (images)
-   image_DLVs = DLVPM_Model.model_list[0].predict(data_test_list[0])
-
-   # Randomly select 100 samples for visualisation
-   random_indices = np.random.choice(image_DLVs.shape[0], size=100, replace=False)
-   image_DLVs_plot = image_DLVs[random_indices, :]
-   y_test_plot     = y_test[random_indices, :]
-
-   # Apply t‑SNE
    tsne = TSNE(n_components=2, random_state=42)
-   tsne_results = tsne.fit_transform(image_DLVs_plot)
+   rng = np.random.default_rng(42)
+   sample_indices = rng.choice(image_latent.shape[0], size=min(200, image_latent.shape[0]), replace=False)
+   tsne_projection = tsne.fit_transform(image_latent[sample_indices])
 
-   # Plot the 2D projection coloured by digit label
-   plt.figure(figsize=(12, 8))
-   for i in range(y_test_plot.shape[1]):
-       points = tsne_results[y_test_plot[:, i] == 1]
-       plt.scatter(points[:, 0], points[:, 1], label=f"Digit {i}")
-   plt.title("t‑SNE projection of MNIST image DLVs")
-   plt.legend()
-   plt.show()
+   print("Latent tensor shape:", latent.shape)
+   print("t-SNE projection shape:", tsne_projection.shape)
+   print("Training history keys:", list(history.history))
 
-7. Save the trained model
--------------------------
+Next steps
+----------
 
-To reuse a trained model in the future, save it to disk using the Keras ``.save`` method.  Because DLVPM uses custom layers, save in the newer ``.keras`` format rather than the legacy ``.h5`` format.
-
-.. code-block:: python
-
-   DLVPM_Model.save("/path/to/output_folder/DLVPM_Model.keras")
-
-This tutorial illustrates the core steps for defining, training and analysing a DLVPM model on a simple two‑view dataset.  More complex applications can extend this pattern by providing additional measurement models and specifying richer structural path matrices.
+* Save the trained model for reuse: ``structural_model.save("mnist_structural_model.keras")``.
+* Swap in alternative encoders (e.g., deeper CNNs) to see how the latent correlations change.
+* Run the PyTorch backend version (see :doc:`mnist_torch`) to compare outputs across backends.

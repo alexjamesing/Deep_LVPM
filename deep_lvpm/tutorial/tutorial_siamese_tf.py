@@ -90,6 +90,9 @@ if __name__ == "__main__":
     print(f"Keras backend: {keras.backend.backend()}")
     print(f"Physical GPUs: {tf.config.list_physical_devices('GPU')}")
 
+    # ------------------------------------------------------------------
+    # Step 1. Configure mixed precision and GPU growth so TensorFlow cooperates.
+    # ------------------------------------------------------------------
     set_global_policy("float32")
     tf.config.run_functions_eagerly(False)
 
@@ -99,6 +102,11 @@ if __name__ == "__main__":
         except Exception:
             pass
 
+    # ------------------------------------------------------------------
+    # Step 2. Load CIFAR-10 and prepare one-hot labels.
+    # ------------------------------------------------------------------
+    # CIFAR loaders return labels with shape (n, 1); squeeze them before the
+    # one-hot conversion so downstream metrics align.
     (x_train, y_train_cat), (x_test, y_test_cat) = keras.datasets.cifar10.load_data()
     x_train = x_train.astype("float32") / 255.0
     x_test = x_test.astype("float32") / 255.0
@@ -117,10 +125,18 @@ if __name__ == "__main__":
     batch_size = 512
     epochs = 500
 
+    # ------------------------------------------------------------------
+    # Step 3. Build augmentation pipeline and tf.data loaders.
+    # ------------------------------------------------------------------
     augment = _make_augmenter()
     train_ds = _make_dataset(x_tr, batch_size=batch_size, seed=seed, augment=augment, training=True)
     val_ds = _make_dataset(x_val, batch_size=batch_size, seed=seed, augment=augment, training=False)
 
+    # ------------------------------------------------------------------
+    # Step 4. Define the shared encoder architecture.
+    # ------------------------------------------------------------------
+    # Both Siamese branches reuse the same Sequential instance.  The final
+    # BatchNormalization layers help stabilise the FactorLayer statistics.
     encoder = keras.Sequential(
         [
             keras.Input(shape=(32, 32, 3), name="cifar_in"),
@@ -143,6 +159,7 @@ if __name__ == "__main__":
 
     adjacency = tf.constant([[0, 1], [1, 0]], dtype="float32")
 
+    # ``is_siamese=True`` instructs StructuralModel to share weights across views.
     model = StructuralModel(
         Path=adjacency,
         model_list=[encoder, encoder],
@@ -158,11 +175,20 @@ if __name__ == "__main__":
     optimisers = [Adam(learning_rate=1e-4), Adam(learning_rate=1e-4)]
     model.compile(optimizer=optimisers)
 
+    # ------------------------------------------------------------------
+    # Step 5. Train the Siamese model and capture validation metrics.
+    # ------------------------------------------------------------------
     history = model.fit(train_ds, validation_data=val_ds, epochs=epochs, verbose=True)
     metrics = _evaluate_structural_model(model, val_ds)
     print("Validation metrics:", metrics)
     print("Training history keys:", list(history.history))
 
+    # ------------------------------------------------------------------
+    # Step 6. Evaluate embeddings with a linear probe.
+    # ------------------------------------------------------------------
+    # Remove the last few layers to expose a compact representation, then train
+    # a lightweight softmax classifier.  This mirrors the original tutorial
+    # guidance and shows how to reuse DLVPM encoders in downstream tasks.
     truncated_encoder = _remove_last_layers(model.model_list[0], n=3)
     train_latent = truncated_encoder.predict(x_train, batch_size=256, verbose=False)
     test_latent = truncated_encoder.predict(x_test, batch_size=256, verbose=False)

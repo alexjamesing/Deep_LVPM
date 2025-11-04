@@ -80,11 +80,29 @@ if __name__ == "__main__":
     print(f"Keras backend: {keras.backend.backend()}")
     print(f"Physical GPUs: {tf.config.list_physical_devices('GPU')}")
 
+    # ------------------------------------------------------------------
+    # Step 1. Load the packaged multi-omics training views.
+    # ------------------------------------------------------------------
+    # ``_load_tcga_sample`` returns the five modalities shipped with the repo.
+    # Keeping them in a fixed order is important so the encoders, optimiser
+    # assignments, and adjacency matrix stay aligned.
     views = _load_tcga_sample()
     view_names = ["histo20", "rnaseq", "methylation", "mirna", "snv"]
 
+    # ------------------------------------------------------------------
+    # Step 2. Build the measurement encoders (one per modality).
+    # ------------------------------------------------------------------
+    # Each encoder is a shallow residual MLP that preserves the dimensionality
+    # of its input.  Residual connections help stabilise FactorLayer training
+    # on tabular data without significant feature engineering.
     encoders = [_residual_block(view.shape[1], name) for view, name in zip(views, view_names)]
 
+    # ------------------------------------------------------------------
+    # Step 3. Define the structural adjacency and training schedule.
+    # ------------------------------------------------------------------
+    # The adjacency matrix expresses a hub-and-spoke structure where the second
+    # factor (F2) connects bidirectionally with the remaining factors.  A gentle
+    # exponential learning-rate decay keeps optimisation stable over 300 epochs.
     adjacency = np.array(
         [
             [0, 1, 0, 0, 0],
@@ -108,6 +126,7 @@ if __name__ == "__main__":
 
     regulariser_list = [regularizers.L1L2(l1=1e-2, l2=1e-2) for _ in encoders]
 
+    # ``tot_num`` is inferred from any view (they all share the same sample set).
     model = StructuralModel(
         Path=adjacency,
         model_list=encoders,
@@ -120,9 +139,13 @@ if __name__ == "__main__":
         train_DLV=True,
     )
 
+    # One Adam optimiser per modality, all driven by the same decay schedule.
     optimisers = [Adam(learning_rate=lr_schedule) for _ in encoders]
     model.compile(optimizer=optimisers)
 
+    # ------------------------------------------------------------------
+    # Step 4. Fit the model and monitor optimisation history.
+    # ------------------------------------------------------------------
     history = model.fit(
         views,
         batch_size=batch_size,
@@ -130,6 +153,9 @@ if __name__ == "__main__":
         verbose=True,
     )
 
+    # ------------------------------------------------------------------
+    # Step 5. Inspect metrics and latent representations.
+    # ------------------------------------------------------------------
     metrics = _evaluate_structural_model(model, views)
     print("Training metrics:", metrics)
     print("Training history keys:", list(history.history))
