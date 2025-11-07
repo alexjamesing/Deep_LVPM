@@ -69,7 +69,6 @@ class FactorLayer(keras.layers.Layer):
         self.kernel_regularizer = kernel_regularizer ## This kernel regularizer variable determines the degree of regularization that projection weight vectors are subject to
         self.epsilon = epsilon ## This is the offset determined during batch normalisation
         self.momentum = momentum ## This is the amount of momentum that covariance matrices are subject to (see pseudo-code for more details)
-        
         # # Additional custom parameters
         self.tot_num = tot_num #kwargs.get("tot_num") ## This is the total number of samples in the full dataset
         self.ndims = ndims #kwargs.get("ndims") ## This is the total number of factors we wish to extract
@@ -143,7 +142,7 @@ class FactorLayer(keras.layers.Layer):
             yi = y[:, i]
             denom = ops.sqrt(scale_fact * ops.sum(ops.square(yi)))
             self.linear_layer_list[i].assign(self.linear_layer_list[i] / denom)
-            self.linear_layer_static[i].assign(self.linear_layer_static[i] / denom)
+            self.linear_layer_static[i].assign(self.linear_layer_list[i] / denom)
 
         y_denom = ops.sqrt(scale_fact * ops.sum(ops.square(y), axis=0))
         out_y = y / y_denom
@@ -176,9 +175,9 @@ class FactorLayer(keras.layers.Layer):
             + scale_fact * (one - momentum) * ops.matmul(ops.transpose(batch_DLV_norm), X)
         )
 
-        # keep static copies in sync
-        for i in range(self.ndims):
-            self.linear_layer_static[i].assign(self.linear_layer_list[i])
+        # # keep static copies in sync
+        # for i in range(self.ndims):
+        #     self.linear_layer_static[i].assign(self.linear_layer_list[i])
 
         self.run.assign(ops.cast(1.0, self.compute_dtype))
 

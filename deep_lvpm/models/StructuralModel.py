@@ -17,6 +17,27 @@ from deep_lvpm.layers.ConfoundLayer import ConfoundLayer
 import pydot
 from keras import ops
 
+be = keras.backend.backend()  # 'tensorflow' | 'torch' | 'jax' (we handle tf/torch)
+
+if be == "tensorflow":
+    try:
+        import tensorflow as tf  # lazy import
+    except ImportError as e:    
+        raise RuntimeError(
+            "Tensorflow backend requested but it is not installed. "
+            "Install Tensorflow or switch Keras backend to Torch."
+        ) from e
+
+elif be == "torch":
+    try:
+        import torch  # lazy import
+    except ImportError as e:
+        raise RuntimeError(
+            "Torch backend requested but it is not installed. "
+            "Install Torch or switch Keras backend to TensorFlow."
+        ) from e
+
+
 
 @keras.utils.register_keras_serializable(package="deep_lvpm",name="StructuralModel")
 class StructuralModel(keras.Model):
@@ -52,7 +73,7 @@ class StructuralModel(keras.Model):
     """
 
     
-    def __init__(self, Path, model_list, regularizer_list, tot_num, ndims, orthogonalization='Moore-Penrose', momentum=0.95, epsilon=1e-4, train_DLV=False, run_from_config=False, is_siamese=False, diag_offset=1e-3, **kwargs):
+    def __init__(self, Path, model_list, regularizer_list, tot_num, ndims, orthogonalization='Moore-Penrose', momentum=0.95, epsilon=1e-4, train_DLV=True, run_from_config=False, is_siamese=False, diag_offset=1e-3, **kwargs):
         
         """
         Initializes the StructuralModel instance.
@@ -119,7 +140,7 @@ class StructuralModel(keras.Model):
                 print('Orthogonalization mode not recognised, must be "Moore-Penrose" or "zca"')
         elif isinstance(model, keras.Model):
             if self.orthogonalization == 'Moore-Penrose':
-                x = FactorLayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon, diag_offset = self.diag_offset)(model.output)
+                x = FactorLayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon)(model.output)
                 model = keras.Model(inputs=model.input, outputs=x)
             elif self.orthogonalization == 'zca':
                 x = ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon, diag_offset = self.diag_offset)(model.output)
@@ -185,15 +206,7 @@ class StructuralModel(keras.Model):
         return y_pred / denom
 
     def _step_tf(self, vie, inputs_v, y, scale_fact):
-
-        try:
-            import tensorflow as tf  # lazy import
-        except ImportError as e:    
-            raise RuntimeError(
-                "Tensorflow backend requested but it is not installed. "
-                "Install Tensorflow or switch Keras backend to Torch."
-            ) from e
-
+        """This is the training step for the tensorflow backend"""
 
         model = self.model_list[vie]
         with tf.GradientTape() as tape:
@@ -211,14 +224,7 @@ class StructuralModel(keras.Model):
         return loss, mse_loss, corr
 
     def _step_torch(self, vie, inputs_v, y, scale_fact):
-
-        try:
-            import torch as torch  # lazy import
-        except ImportError as e:    
-            raise RuntimeError(
-                "Torch backend requested but it is not installed. "
-                "Install Torch or switch Keras backend to Tensorflow."
-            ) from e
+        """This is the training step for the Torch backend"""
 
         model = self.model_list[vie]
 
@@ -256,16 +262,73 @@ class StructuralModel(keras.Model):
         return loss, mse_loss, corr
 
 
-    def train_step(self, inputs):
-        # Unpack (tf.data-like packs inputs in a tuple/list)
-        inputs = inputs[0]
+    # def _step_torch(self, vie, inputs_v, y, scale_fact):
+       
 
-        # Forward pass through all views to construct global DLVs
+    #     model = self.model_list[vie]
+
+    #     # --------- 0) Zero grads (works for both torch optimizers and Keras optimizers) ---------
+    #     # If you use a pure torch optimizer:
+    #     if hasattr(model.optimizer, "zero_grad"):
+    #         model.optimizer.zero_grad(set_to_none=True)
+    #     else:
+    #         # Keras Optimizer path: clear .grad on the underlying torch tensors
+    #         for v in model.trainable_variables:
+    #             t = getattr(v, "value", v)
+    #             if t.grad is not None:
+    #                 t.grad = None  # or: t.grad.zero_()
+
+    #     # --------- 1) Forward ---------
+    #     y_pred = model(inputs_v, training=True)
+    #     y_pred = self._normalize_pred(y_pred, scale_fact)
+
+    #     mse_loss = self.mse_loss(y, y_pred, vie)
+
+    #     # Sum any internal/regularization losses from the Keras model
+    #     if getattr(model, "losses", None):
+    #         internal_loss = torch.stack([
+    #             (l if torch.is_tensor(l)
+    #             else torch.tensor(l, dtype=mse_loss.dtype, device=mse_loss.device))
+    #             for l in model.losses
+    #         ]).sum()
+    #     else:
+    #         internal_loss = torch.zeros((), dtype=mse_loss.dtype, device=mse_loss.device)
+
+    #     loss = mse_loss + internal_loss
+
+    #     # --------- 2) Backward (classic) ---------
+    #     loss.backward()
+
+    #     # --------- 3) Apply update ---------
+    #     if hasattr(model.optimizer, "step"):
+    #         # Pure torch optimizer (the most "classic" flow)
+    #         model.optimizer.step()
+    #     else:
+    #         # Keras Optimizer: collect grads from .grad and pass to apply_gradients
+    #         trainable_vars = model.trainable_variables
+    #         grads_from_param = []
+    #         for v in trainable_vars:
+    #             t = getattr(v, "value", v)
+    #             g = t.grad
+    #             if g is None:
+    #                 g = torch.zeros_like(t)  # keep shapes aligned; unused params possible
+    #             grads_from_param.append(g)
+    #         model.optimizer.apply_gradients(zip(grads_from_param, trainable_vars))
+
+    #     corr = self.corr_metric(y, y_pred, vie)
+    #     return loss, mse_loss, corr
+
+
+    def _weight_normaliser(self,inputs):
+        """This is an internal function designed to normalise weights
+        after each batch"""
+        
+         # Forward pass through all views to construct global DLVs
         y = self(inputs, training=self.train_DLV)
 
         # scale_fact = tot_num / batch_size
         y_dtype = ops.dtype(y)
-        scale_fact = ops.cast(self.tot_num, y_dtype) / ops.cast(ops.shape(y)[0], y_dtype)
+        scale_fact = ops.cast(self.tot_num, y_dtype) / ops.cast(self._shape_fn(y)[0], y_dtype)
 
         # per-view normalization via last layer's weight_normalizer
         y_list = []
@@ -275,6 +338,26 @@ class StructuralModel(keras.Model):
             y_list.append(y_view)
 
         y = ops.stack(y_list, axis=-1)
+
+        return y, scale_fact
+
+
+    def train_step(self, inputs):
+        """This is the main training set, it runs differently in tensorflow and torch"""
+
+
+
+        # Unpack (tf.data-like packs inputs in a tuple/list)
+        inputs = inputs[0]
+
+        be = keras.backend.backend()  # 'tensorflow' | 'torch' | 'jax' (we handle tf/torch)
+
+        if be == "tensorflow":
+            y, scale_fact = self._weight_normaliser(inputs)
+        elif be == "torch":
+            with torch.no_grad():
+                y, scale_fact = self._weight_normaliser(inputs)
+            
 
         total_loss = [None] * len(self.model_list)
         total_CC   = [None] * len(self.model_list)
@@ -353,7 +436,19 @@ class StructuralModel(keras.Model):
             y_pred = self.model_list[vie](inputs_nested[vie], training=False)
 
             mse_loss = self.mse_loss(y, y_pred, vie)
-            internal_loss = self.model_list[vie].losses
+            
+            internal_losses = self.model_list[vie].losses
+            if internal_losses:
+                internal_loss = ops.sum(
+                    ops.stack(
+                        [ops.convert_to_tensor(loss, dtype=ops.dtype(mse_loss)) for loss in internal_losses],
+                        axis=0,
+                    ),
+                    axis=0,
+                )
+            else:
+                internal_loss = ops.zeros_like(mse_loss)
+
             loss = mse_loss + internal_loss
 
             corr = self.corr_metric(y, y_pred, vie)
@@ -438,6 +533,18 @@ class StructuralModel(keras.Model):
         corr_mean = ops.sum(corr_masked) / (n_conn_safe * float(self.ndims))
 
         return corr_mean
+    
+     # This function avoids problems with passing symbolic 
+     # tensors to ops.shape in tensorflow
+
+    def _shape_fn(self,X):
+        backend = keras.backend.backend()
+        if backend == "tensorflow":
+            shape = tf.shape(X)  # handles unknown ranks
+        else:
+            shape = ops.shape(X)
+        return shape
+    
 
     def calculate_redundancy(self, X, epsilon=1e-8):
         """
@@ -455,8 +562,10 @@ class StructuralModel(keras.Model):
         col_mean = ops.mean(X, axis=0, keepdims=True)
         Xc = X - col_mean
 
+        backend = keras.backend.backend()
+
         # Sample-size for covariance
-        n = ops.shape(Xc)[0]
+        n = self._shape_fn(Xc)[0]
         n_f = ops.cast(n, X.dtype)
         denom_n = ops.maximum(n_f - 1.0, 1.0)  # guard when N == 1
 
@@ -474,7 +583,7 @@ class StructuralModel(keras.Model):
 
         # Mean absolute correlation over off-diagonal entries
         corr_abs = ops.abs(corr)
-        D = ops.shape(corr_abs)[0]
+        D = self._shape_fn(corr_abs)[0]
         mask = ops.ones_like(corr_abs) - ops.cast(ops.eye(D), corr_abs.dtype)  # zero diagonal
         total = ops.sum(corr_abs * mask)
 
@@ -496,7 +605,7 @@ class StructuralModel(keras.Model):
             raise ValueError("Input must be a 3D tensor")
 
         correlation_matrices = []
-        n_samples = ops.cast(ops.shape(DLVs)[0], DLVs.dtype)
+        n_samples = ops.cast(self._shape_fn(DLVs)[0], DLVs.dtype)
         eps = ops.convert_to_tensor(1e-7, dtype=DLVs.dtype)
 
         for dim in range(DLVs.shape[1]):

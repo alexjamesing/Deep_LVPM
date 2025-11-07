@@ -14,4 +14,7 @@ deep_lvpm/models/StructuralModel.py
 deep_lvpm/models/__init__.py
 deep_lvpm/tutorial/__init__.py
 deep_lvpm/tutorial/tutorial_code.py
-deep_lvpm/tutorial/tutorial_code_siamese.py
+deep_lvpm/tutorial/tutorial_mnist_tf.py
+deep_lvpm/tutorial/tutorial_mnist_torch.py
+deep_lvpm/tutorial/tutorial_siamese_tf.py
+deep_lvpm/tutorial/tutorial_tcga_tf.py

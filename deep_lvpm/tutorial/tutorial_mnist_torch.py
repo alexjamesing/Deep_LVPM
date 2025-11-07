@@ -17,16 +17,22 @@ import os
 # Ensure the torch backend is active before importing Keras.
 os.environ.setdefault("KERAS_BACKEND", "torch")
 
+
+# # Allow PyTorch to fall back to CPU for ops missing on Apple’s MPS backend.
+if os.environ.get("KERAS_BACKEND", "").lower() == "torch":
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
+
+
 import numpy as np
 import torch
 import torch.nn as nn
-
+torch.autograd.set_detect_anomaly(True)  # enable once
 import keras
 from keras.optimizers import Adam
 
 from sklearn.manifold import TSNE
 
-from deep_lvpm.layers.FactorLayer import FactorLayer
 from deep_lvpm.models.StructuralModel import StructuralModel
 
 
@@ -39,28 +45,14 @@ def _evaluate_structural_model(model: StructuralModel, data) -> dict[str, float]
     return {f"metric_{idx}": float(val) for idx, val in enumerate(results)}
 
 
-class TorchMeasurementModel(keras.Model):
-    """Wrap a pure PyTorch module so it can sit inside Deep LVPM."""
+class TorchModuleLayer(keras.layers.Layer):
+    """Wrap a pure PyTorch nn.Module for use inside a Keras model."""
 
-    def __init__(
-        self,
-        torch_module: nn.Module,
-        tot_num: int,
-        ndims: int,
-        momentum: float,
-        epsilon: float,
-        name: str,
-    ) -> None:
-        super().__init__(name=name)
+    def __init__(self, torch_module: nn.Module, **kwargs) -> None:
+        super().__init__(**kwargs)
         self.torch_module = torch_module
-        self.factor_layer = FactorLayer(
-            kernel_regularizer=None,
-            tot_num=tot_num,
-            ndims=ndims,
-            momentum=momentum,
-            epsilon=epsilon,
-        )
-        self._current_device: torch.device | None = None
+        self._current_device: str | None = None
+        self._feature_dim: int | None = None
 
     def _prepare_tensor(self, inputs) -> torch.Tensor:
         tensor = torch.as_tensor(inputs, dtype=torch.float32)
@@ -68,13 +60,42 @@ class TorchMeasurementModel(keras.Model):
             tensor = tensor.permute(0, 3, 1, 2).contiguous()
         return tensor
 
+    def build(self, input_shape):
+        device = torch.device("cpu")
+        self.torch_module.to(device)
+
+        spatial_shape = [int(dim) for dim in input_shape[1:]]
+        dummy = torch.zeros((1, *spatial_shape), dtype=torch.float32, device=device)
+        dummy = self._prepare_tensor(dummy)
+
+        with torch.no_grad():
+            features = self.torch_module(dummy)
+            if features.ndim > 2:
+                features = torch.flatten(features, start_dim=1)
+
+        self._feature_dim = int(features.shape[-1])
+        self._current_device = device.type
+
+        super().build(input_shape)
+
     def call(self, inputs, training: bool = False):
         tensor = self._prepare_tensor(inputs)
 
         device = tensor.device
-        if self._current_device != device:
+        device_type = device.type
+
+        if device_type == "meta":
+            batch = tensor.shape[0]
+            feature_dim = self._feature_dim or 1
+            return torch.zeros(
+                (batch, feature_dim),
+                device=device,
+                dtype=tensor.dtype,
+            )
+
+        if self._current_device != device_type:
             self.torch_module.to(device)
-            self._current_device = device
+            self._current_device = device_type
 
         self.torch_module.train(training)
         features = self.torch_module(tensor)
@@ -82,7 +103,7 @@ class TorchMeasurementModel(keras.Model):
         if features.ndim > 2:
             features = torch.flatten(features, start_dim=1)
 
-        return self.factor_layer(features, training=training)
+        return features
 
 
 if __name__ == "__main__":
@@ -117,7 +138,7 @@ if __name__ == "__main__":
     # Step 2. Define the pure PyTorch measurement modules.
     # ------------------------------------------------------------------
     # Each measurement model is authored entirely in torch.nn.  We wrap the
-    # modules with TorchMeasurementModel so they plug into the Keras-based
+    # modules with TorchModuleLayer so they plug into the Keras-based
     # StructuralModel without rewriting the training loop.
     print("Building PyTorch measurement modules...")
     image_torch_module = nn.Sequential(
@@ -130,7 +151,7 @@ if __name__ == "__main__":
         nn.Flatten(),
         nn.Linear(64 * 5 * 5, 128),
         nn.ReLU(inplace=True),
-        nn.Dropout(p=0.5),
+        nn.Dropout(p=0.1),
     )
 
     label_torch_module = nn.Sequential(
@@ -143,29 +164,23 @@ if __name__ == "__main__":
     epsilon = 1e-4
     tot_num = x_train.shape[0]
 
-    image_model = TorchMeasurementModel(
+    image_input = keras.Input(shape=x_train.shape[1:], name="mnist_image_in")
+    image_features = TorchModuleLayer(
         torch_module=image_torch_module,
-        tot_num=tot_num,
-        ndims=ndims,
-        momentum=momentum,
-        epsilon=epsilon,
-        name="mnist_image_encoder",
-    )
+        name="mnist_image_torch",
+    )(image_input)
+    image_model = keras.Model(image_input, image_features, name="mnist_image_encoder")
 
-    label_model = TorchMeasurementModel(
+    label_input = keras.Input(shape=(num_classes,), name="mnist_label_in")
+    label_features = TorchModuleLayer(
         torch_module=label_torch_module,
-        tot_num=tot_num,
-        ndims=ndims,
-        momentum=momentum,
-        epsilon=epsilon,
-        name="mnist_label_encoder",
-    )
+        name="mnist_label_torch",
+    )(label_input)
+    label_model = keras.Model(label_input, label_features, name="mnist_label_encoder")
 
     # ------------------------------------------------------------------
     # Step 3. Assemble and train the StructuralModel.
     # ------------------------------------------------------------------
-    # ``run_from_config=True`` tells StructuralModel not to append FactorLayer
-    # automatically, because TorchMeasurementModel already includes it.
     structural_model = StructuralModel(
         Path=adjacency,
         model_list=[image_model, label_model],
@@ -175,14 +190,13 @@ if __name__ == "__main__":
         orthogonalization="Moore-Penrose",
         momentum=momentum,
         epsilon=epsilon,
-        train_DLV=False,
-        run_from_config=True,
+        train_DLV=True,
     )
 
     # Matching optimisation strategy: one Adam instance per measurement view.
     print("Compiling StructuralModel...")
-    image_optimizer = Adam(learning_rate=1e-4)
-    label_optimizer = Adam(learning_rate=1e-4)
+    image_optimizer = Adam(learning_rate=1e-5)
+    label_optimizer = Adam(learning_rate=1e-5)
     structural_model.compile(optimizer=[image_optimizer, label_optimizer])
 
     print("Training...")
