@@ -1,0 +1,196 @@
+body.dlvpm-landing-page {
+  background: #fbfcff;
+}
+
+body.dlvpm-landing-page .sidebar,
+body.dlvpm-landing-page .sidebar-drawer,
+body.dlvpm-landing-page .toc-sidebar,
+body.dlvpm-landing-page .toc-drawer,
+body.dlvpm-landing-page .mobile-header,
+body.dlvpm-landing-page .sidebar-overlay,
+body.dlvpm-landing-page .toc-overlay,
+body.dlvpm-landing-page .nav-overlay-icon,
+body.dlvpm-landing-page .toc-overlay-icon {
+  display: none !important;
+}
+
+body.dlvpm-landing-page .page {
+  display: block;
+}
+
+body.dlvpm-landing-page main {
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body.dlvpm-landing-page .content {
+  padding: 0;
+  max-width: none;
+}
+
+body.dlvpm-landing-page .main {
+  max-width: none;
+  width: 100%;
+  display: block;
+  padding: 0;
+}
+
+body.dlvpm-landing-page #furo-main-content {
+  padding: 0;
+}
+
+.dlvpm-landing {
+  position: relative;
+  min-height: 100vh;
+  padding: clamp(3rem, 8vw, 6rem) 1.5rem 4rem;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #fbfcff;
+}
+
+.dlvpm-landing__mesh {
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle at 20% 20%, rgba(99, 102, 241, 0.15), transparent 40%),
+    radial-gradient(circle at 80% 0%, rgba(14, 165, 233, 0.18), transparent 45%);
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.dlvpm-landing__mesh::before,
+.dlvpm-landing__mesh::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(120deg, rgba(15, 23, 42, 0.05) 25%, transparent 25%, transparent 75%, rgba(15, 23, 42, 0.05) 75%),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.05) 25%, transparent 25%, transparent 75%, rgba(15, 23, 42, 0.05) 75%);
+  background-size: 140px 140px;
+  opacity: 0.3;
+  animation: dlvpm-drift 25s linear infinite;
+}
+
+.dlvpm-landing__mesh::after {
+  animation-duration: 35s;
+  animation-direction: reverse;
+  opacity: 0.2;
+}
+
+@keyframes dlvpm-drift {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(-80px, -60px, 0);
+  }
+}
+
+.dlvpm-landing__inner {
+  position: relative;
+  text-align: center;
+  max-width: 640px;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 2rem;
+  padding: clamp(2.5rem, 6vw, 4rem);
+  box-shadow: 0 35px 65px rgba(15, 23, 42, 0.12);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.dlvpm-landing__logo {
+  max-width: 180px;
+  width: 40%;
+  margin-bottom: 1.5rem;
+  filter: drop-shadow(0 10px 25px rgba(15, 23, 42, 0.2));
+}
+
+.dlvpm-landing__tagline {
+  font-size: 1.15rem;
+  color: #475569;
+  margin: 0 0 1.75rem;
+}
+
+.dlvpm-landing__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  justify-content: center;
+  margin-bottom: 2rem;
+}
+
+.dlvpm-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.85rem 1.6rem;
+  border-radius: 999px;
+  border: 1px solid rgba(79, 70, 229, 0.3);
+  color: #4338ca;
+  text-decoration: none;
+  font-weight: 600;
+  background: #fff;
+  transition: transform 150ms ease, box-shadow 150ms ease, border 150ms ease;
+}
+
+.dlvpm-pill:hover,
+.dlvpm-pill:focus-visible {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 25px rgba(79, 70, 229, 0.18);
+  border-color: rgba(79, 70, 229, 0.6);
+}
+
+.dlvpm-star-card {
+  background: #fff;
+  border-radius: 1.5rem;
+  padding: 1.5rem;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.08);
+}
+
+.dlvpm-star-card p {
+  margin-top: 0;
+  margin-bottom: 1rem;
+  color: #475569;
+  font-size: 1rem;
+}
+
+.dlvpm-star-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.9rem 2rem;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #fb923c, #f97316);
+  color: #fff;
+  text-decoration: none;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  box-shadow: 0 18px 35px rgba(249, 115, 22, 0.35);
+  transition: transform 150ms ease, box-shadow 150ms ease;
+}
+
+.dlvpm-star-button:hover,
+.dlvpm-star-button:focus-visible {
+  transform: translateY(-2px);
+  box-shadow: 0 22px 45px rgba(234, 88, 12, 0.4);
+}
+
+.dlvpm-landing__footer {
+  margin: 1.75rem 0 0;
+  font-size: 0.9rem;
+  color: #94a3b8;
+}
+
+@media (max-width: 540px) {
+  .dlvpm-landing__inner {
+    border-radius: 1.5rem;
+  }
+
+  .dlvpm-landing__title {
+    letter-spacing: 0.2rem;
+  }
+}

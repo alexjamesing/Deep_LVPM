@@ -8,5 +8,7 @@ templates_path = ['_templates']
 exclude_patterns = []
 html_theme = 'furo'
 html_static_path = ['_static']
+html_title = ""
+html_css_files = ['custom.css']
 
-html_logo = "../dlvpm_logo_final.png" 
+html_logo = "../dlvpm_logo_final.png"
