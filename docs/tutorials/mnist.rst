@@ -97,12 +97,19 @@ We instantiate :class:`deep_lvpm.models.StructuralModel.StructuralModel` with th
    tot_num     = x_train.shape[0]   # total number of samples
    regularizer_list = [None, None]
 
-   DLVPM_Model = StructuralModel(Path, model_list, regularizer_list, tot_num, ndims)
+   DLVPM_Model = StructuralModel(
+       Path,
+       model_list,
+       regularizer_list,
+       tot_num,
+       ndims,
+       orthogonalization="zca",
+   )
 
    # Compile the model with one optimiser per view
    optimizer_list = [
-       keras.optimizers.Adam(learning_rate=1e-4),
-       keras.optimizers.Adam(learning_rate=1e-4),
+       keras.optimizers.Adam(learning_rate=1e-5),
+       keras.optimizers.Adam(learning_rate=1e-5),
    ]
    DLVPM_Model.compile(optimizer=optimizer_list)
 

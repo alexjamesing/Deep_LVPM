@@ -8,7 +8,7 @@ If you find this project valuable, please consider giving it a star on GitHub.  
 
 # Installation
 
-This package was most recently tested on TensorFlow 2.16.2, which is compatible with Python 3.12.  
+This package was most recently tested on TensorFlow 2.16.2 using Python 3.11 (recommended for best stability).  
 We recommend creating a fresh environment using `conda` or `venv` and then installing the package  
 **with the appropriate extra** for your hardware:
 
@@ -26,7 +26,7 @@ conda:
 
 ```bash
 # Create and activate environment
-conda create -n myenv python=3.12
+conda create -n myenv python=3.11
 conda activate myenv
 
 # CPU install (Linux/Windows/Intel Mac)
@@ -45,7 +45,7 @@ venv:
 ~~~
 
 # Create and activate environment
-python3 -m venv myenv   # requires Python 3.12+
+python3 -m venv myenv   # use Python 3.11 for best stability
 source myenv/bin/activate  # mac/linux
 myenv\Scripts\activate     # windows
 

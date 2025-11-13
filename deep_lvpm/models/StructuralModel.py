@@ -121,7 +121,7 @@ class StructuralModel(tf.keras.Model):
                 model = tf.keras.Model(inputs=model.input, outputs=x)
             elif self.orthogonalization == 'zca':
                 x = ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon)(model.output)
-                model = tf.keras.Model(inputs=input, outputs=x)
+                model = tf.keras.Model(inputs=model.input, outputs=x)
             else:
                 print('Orthogonalization mode not recognised, must be "Moore-Penrose" or "zca"')
         else:
