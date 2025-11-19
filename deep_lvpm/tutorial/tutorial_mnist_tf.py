@@ -215,8 +215,8 @@ MNIST_image_model = keras.Sequential(
         layers.Conv2D(64, kernel_size=(3, 3), activation="relu"),
         layers.MaxPooling2D(pool_size=(2, 2)),
         layers.Flatten(),
-        layers.Dense(128, activation='relu'),
-        layers.Dropout(0.5)
+        layers.Dense(512, activation='relu'),
+        layers.Dropout(0.1)
 
     ]
 )
@@ -240,7 +240,7 @@ tot_num = x_train.shape[0] # the total number of samples, which is used for inte
 batch_size = 256
 epochs = 20
 
-DLVPM_Model = StructuralModel(Path, model_list, regularizer_list, tot_num, ndims, orthogonalization="zca", train_DLV=True)
+DLVPM_Model = StructuralModel(Path, model_list, regularizer_list, tot_num, ndims, orthogonalization="zca", train_DLV=False)
 
 optimizer_list = [keras.optimizers.Adam(learning_rate=1e-5),keras.optimizers.Adam(learning_rate=1e-5)]
 

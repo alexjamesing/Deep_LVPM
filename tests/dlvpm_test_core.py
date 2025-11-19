@@ -1,6 +1,3 @@
-# tests/test_deep_lvpm_core.py
-import json
-import os
 from pathlib import Path
 
 import numpy as np
@@ -10,7 +7,10 @@ from keras import layers
 
 from deep_lvpm.layers.FactorLayer import FactorLayer
 from deep_lvpm.models.StructuralModel import StructuralModel
-from deep_lvpm.tutorial.tutorial_mnist_tf import _evaluate_structural_model
+from deep_lvpm.tutorial.tcga_quickstart import (
+    _evaluate_structural_model,
+    run_tcga_quickstart,
+)
 
 
 def test_factor_layer_training_updates_state():
@@ -71,22 +71,10 @@ def test_evaluate_structural_model_coerces_float_outputs():
     assert all(isinstance(value, float) for value in metrics.values())
 
 
-# @pytest.mark.skipif(
-#     not Path(__file__).with_name("mnist_metrics.json").exists(),
-#     reason="Recorded MNIST metrics not supplied; run tutorial_mnist_tf and save outputs.",
-# )
+def test_tcga_quickstart_metrics_exceed_thresholds():
+    """Fast TCGA run should keep correlation high and redundancy low."""
 
-# def test_mnist_tutorial_metrics_regression():
-#     """
-#     Guard against regressions in the MNIST tutorial by comparing recorded metrics.
+    results = run_tcga_quickstart()
 
-#     Create tests/mnist_metrics.json after running the tutorial with the structure:
-#     {"total_loss": ..., "cross_metric": ..., "mse_loss": ..., "redundancy": ...}
-#     """
-#     metrics_path = Path(__file__).with_name("mnist_metrics.json")
-#     with metrics_path.open("r", encoding="utf-8") as handle:
-#         recorded = json.load(handle)
-
-#     expected_keys = {"total_loss", "cross_metric", "mse_loss", "redundancy"}
-#     assert expected_keys.issubset(recorded)
-#     assert recorded["cross_metric"] >= 0.9  # adjust threshold to match your hardware run
+    assert results["cross_val"] is not None and results["cross_val"] > 0.5
+    assert results["redundancy"] is not None and results["redundancy"] < 0.1

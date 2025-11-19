@@ -234,7 +234,14 @@ class StructuralModel(keras.Model):
         mse_loss = self.mse_loss(y, y_pred, vie)
 
         if model.losses:
-            mse_loss = torch.stack([l if torch.is_tensor(l) else torch.tensor(l, dtype=mse_loss.dtype, device=mse_loss.device)]).sum()
+            internal_loss = torch.stack(
+                [
+                    l
+                    if torch.is_tensor(l)
+                    else torch.tensor(l, dtype=mse_loss.dtype, device=mse_loss.device)
+                    for l in model.losses
+                ]
+            ).sum()
         else:
             internal_loss = torch.zeros((), dtype=mse_loss.dtype, device=mse_loss.device)
                               

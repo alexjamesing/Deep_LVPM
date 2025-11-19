@@ -140,37 +140,6 @@ class ZCALayer(keras.layers.Layer):
         return out
 
 
-    # def inv_sqrt_via_cholesky(self, M):
-    #     """
-    #     Computes a triangular factor that squares to M^{-1} for a positive-definite matrix M.
-        
-    #     Specifically:
-    #         1) L = cholesky(M)
-    #         2) L_inv = triangular_solve(L, I)
-    #         3) M^{-1} = L_inv^T @ L_inv
-    #         4) A valid 'square root' of M^{-1} is L_inv^T (or cholesky(M_inv)), 
-    #         which you can multiply by vectors to get M^{-1/2} * x.
-            
-    #     Returns:
-    #         A (upper) triangular factor R such that R^T R = M^{-1}.
-    #         i.e. R = L_inv^T and M^{-1} = R^T R.
-    #     """
-    #     # 1) Cholesky factor: M = L L^T
-    #     L = tf.linalg.cholesky(M)  
-    #     # 2) Invert L by solving L * X = I
-    #     n = tf.shape(M)[0]
-    #     I = tf.eye(n, dtype=M.dtype)
-    #     L_inv = tf.linalg.triangular_solve(L, I, lower=True)  
-    #     # M^{-1} = L_inv^T @ L_inv
-        
-    #     # If we define R = L_inv^T, then:
-    #     #   R^T R = (L_inv^T)^T (L_inv^T) = L_inv L_inv^T = M^{-1}.
-    #     # But we typically use R^T R form. If we want R R^T = M^{-1},
-    #     # you could return L_inv instead.
-        
-    #     # We'll return the upper-triangular factor, R = L_inv^T
-    #     return tf.transpose(L_inv)
-
     def inv_sqrt_via_cholesky(self, M):
         
         """
@@ -187,35 +156,7 @@ class ZCALayer(keras.layers.Layer):
         return ops.matmul(V_scaled, ops.transpose(eigvecs))
 
 
-    
-    # def weight_normalizer(self, inputs):
-
-    #     """ The purpose of this function is to re-normalize weights weight vectors. This 
-    #     prevents a collapse to a trivial solution. The inputs here are DLVs for this data view. 
-        
-    #     """
-
-    #     y = inputs[0]
-    #     scale_fact = inputs[1]
-
-    #     diag = self.diag_offset
-    #     denom = tf.math.sqrt(tf.math.multiply(scale_fact,tf.math.reduce_sum(tf.math.square(y),axis=0)))
-    #     self.project.assign(tf.divide(self.project,denom)) ## Here, we normalize the DLVPM weights
-
-    
-    #     # #sqrt_inv_y =tf.where(tf.equal(self.run, 0),tf.linalg.sqrtm(tf.linalg.inv(tf.matmul(tf.transpose(y),y)+100*diag*tf.eye(self.moving_conv2.shape[0]))), tf.linalg.sqrtm(tf.linalg.inv(self.moving_conv2+diag*tf.eye(self.moving_conv2.shape[0])))) ## pseudo inverse called on first batch for improved numeric stability
-    #     #sqrt_inv_y =tf.linalg.sqrtm(tf.linalg.inv(self.moving_conv2+diag*tf.eye(self.moving_conv2.shape[0]))) ## pseudo inverse called on first batch for improved numeric stability
-    #     #sqrt_inv_y  = self.inv_sqrt_via_cholesky(self.moving_conv2+diag*tf.eye(self.moving_conv2.shape[0]))  # shape = [dim, dim]
-    #     sqrt_inv_y  = self.inv_sqrt_via_cholesky(self.moving_conv2+self.decaying_diagonal(self.run, self.moving_conv2.shape[0]))  # shape = [dim, dim]
-        
-        
-    #     #scale_fact*(tf.matmul(tf.transpose(y),y))
-    #     #sqrt_inv_y  =  self.inv_sqrt_via_cholesky(scale_fact*(tf.matmul(tf.transpose(y),y))+diag*tf.eye(self.moving_conv2.shape[0]))
-
-    #     out_y = tf.matmul(tf.squeeze(y),sqrt_inv_y) ## Here, we normalize the output DLVs
-
-    #     return out_y
-
+   
     def weight_normalizer(self, inputs):
 
         #     """ The purpose of this function is to re-normalize weights weight vectors. This 

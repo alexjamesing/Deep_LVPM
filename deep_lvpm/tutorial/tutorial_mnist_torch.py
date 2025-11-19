@@ -187,7 +187,7 @@ if __name__ == "__main__":
         regularizer_list=[None, None],
         tot_num=tot_num,
         ndims=ndims,
-        orthogonalization="Moore-Penrose",
+        orthogonalization="zca",
         momentum=momentum,
         epsilon=epsilon,
         train_DLV=True,

@@ -1,15 +1,11 @@
 
-![Alt text](dlvpm_logo_final.png)
-
-# Deep LVPM
+<img src="dlvpm_logo_final.png" alt="Deep LVPM logo" width="50%">
 
 Deep Latent Variable Path Modelling (DLVPM) is a method for path/structural equation modelling utilising deep neural networks. The aim of the method is to connect different data types together via sets of orthogonal deep latent variables (DLVs). Full documentation for this package can be found here: https://deep-lvpm.readthedocs.io/en/latest/index.html. This work has now been published here: https://www.nature.com/articles/s42256-025-01052-4. 
 
 Backend-agnostic with Keras 3: DLVPM is implemented on Keras 3 and runs backend-agnostically on either TensorFlow or PyTorch; select your preferred backend by installing the corresponding extra (e.g., tf-cpu, tf-gpu, tf-apple, torch-cpu, torch-apple, or preinstall CUDA PyTorch for torch-gpu) and, if needed, set KERAS_BACKEND=tensorflow or KERAS_BACKEND=torch. The high-level Keras API (model.fit, model.evaluate, etc.) is unchanged across backends.
 
 If you find this project valuable, please consider giving it a star on GitHub.  Your support helps others discover the project and motivates continued development!
-
-[![GitHub stars](https://img.shields.io/github/stars/alexjamesing/Deep_LVPM.svg?style=social&label=Star)](https://github.com/alexjamesing/Deep_LVPM)
 
 # Installing deep-lvpm (keras 3 / multi-backend) — keras3 branch
 
