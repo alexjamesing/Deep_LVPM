@@ -6,7 +6,7 @@ import keras
 from keras import layers
 
 from deep_lvpm.layers.FactorLayer import FactorLayer
-from deep_lvpm.models.StructuralModel import StructuralModel
+from deep_lvpm.model import StructuralModel
 from deep_lvpm.tutorial.tcga_quickstart import (
     _evaluate_structural_model,
     run_tcga_quickstart,

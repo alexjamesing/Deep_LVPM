@@ -1,76 +1,87 @@
 Installation
 ============
 
-The Keras 3 release of Deep LVPM supports multiple backends via installation **extras**.  
-Pick the extra that matches your preferred backend:
+Deep LVPM now targets **Keras 3** (multi-backend).  You install *one* backend (TensorFlow or PyTorch) via a pip
+extra, then force the backend if necessary with ``KERAS_BACKEND``.  The current release has been exercised on
+Python 3.10–3.12; Python 3.12 is recommended for fresh environments.
 
-* ``[tf-cpu]`` – TensorFlow CPU wheels (Linux, Windows, Intel macOS).
-* ``[tf-gpu]`` – TensorFlow with bundled CUDA/cuDNN wheels (Linux with NVIDIA GPU).
-* ``[tf-apple]`` – TensorFlow + Metal plugins for Apple Silicon (macOS arm64, Python 3.10–3.11).
-* ``[torch-cpu]`` – PyTorch CPU wheels (Linux, Windows, Intel macOS, Apple Silicon).
-* ``[torch-apple]`` – PyTorch MPS wheels (Apple Silicon).
-* ``[torch-gpu]`` – Empty extra intended for CUDA-enabled PyTorch installs (preinstall from `pytorch.org <https://pytorch.org>`_ first).
+We strongly suggest creating a clean conda environment (or venv/micromamba etc) before installing.  The commands below match
+the instructions in :file:`README.md`.
 
-You can switch backends at runtime by exporting the ``KERAS_BACKEND`` environment variable (``tensorflow`` or ``torch``).  Unless otherwise noted, the tutorials default to TensorFlow.
+Choose a backend
+----------------
+
+DLVPM provides extras so you only pull the runtime you need.  Pick exactly one of the following:
+
+* **TensorFlow**: ``tf-cpu`` (portable CPU build), ``tf-gpu`` (Linux + NVIDIA CUDA wheel), ``tf-apple`` (Apple Silicon).
+* **PyTorch**: ``torch-cpu`` (CPU builds), ``torch-apple`` (Apple Silicon), ``torch-gpu`` (install CUDA PyTorch first, then use the empty extra to avoid CPU wheels).
+
+.. note::
+
+   DLVPM is now compatible with **both TensorFlow and PyTorch backends** through Keras 3.  Set ``KERAS_BACKEND=tensorflow``
+   or ``KERAS_BACKEND=torch`` if you have multiple runtimes installed and want to force a specific backend.
 
 Conda environment
 -----------------
 
+To create a conda environment and install the package from the ``keras3`` branch:
+
 .. code-block:: bash
 
-   # create a new conda environment (Python 3.11 works across backends)
-   conda create -n dlvpm-k3 python=3.11 -y
+   conda create -n dlvpm-k3 python=3.12 -y
    conda activate dlvpm-k3
 
-   # TensorFlow CPU
-   pip install "git+https://github.com/alexjamesing/Deep_LVPM.git#egg=deep-lvpm[tf-cpu]"
+   # TensorFlow backends -------------------------------------------------
+   # CPU (Linux/Windows/Intel Mac)
+   pip install "git+https://github.com/alexjamesing/Deep_LVPM.git@keras3#egg=deep-lvpm[tf-cpu]"
 
-   # TensorFlow + CUDA (Linux, NVIDIA GPU)
-   pip install "git+https://github.com/alexjamesing/Deep_LVPM.git#egg=deep-lvpm[tf-gpu]"
+   # NVIDIA GPU (Linux, bundled CUDA wheel)
+   pip install "git+https://github.com/alexjamesing/Deep_LVPM.git@keras3#egg=deep-lvpm[tf-gpu]"
 
-   # TensorFlow on Apple Silicon (macOS arm64)
-   pip install "git+https://github.com/alexjamesing/Deep_LVPM.git#egg=deep-lvpm[tf-apple]"
+   # Apple Silicon (M-series)
+   pip install "git+https://github.com/alexjamesing/Deep_LVPM.git@keras3#egg=deep-lvpm[tf-apple]"
 
-   # PyTorch CPU
-   pip install "git+https://github.com/alexjamesing/Deep_LVPM.git#egg=deep-lvpm[torch-cpu]"
+   # PyTorch backends ----------------------------------------------------
+   # CPU (Linux/Windows/macOS Intel)
+   pip install "git+https://github.com/alexjamesing/Deep_LVPM.git@keras3#egg=deep-lvpm[torch-cpu]"
 
-   # PyTorch Apple Silicon (uses MPS acceleration)
-   pip install "git+https://github.com/alexjamesing/Deep_LVPM.git#egg=deep-lvpm[torch-apple]"
+   # Apple Silicon (M-series)
+   pip install "git+https://github.com/alexjamesing/Deep_LVPM.git@keras3#egg=deep-lvpm[torch-apple]"
 
-   # PyTorch CUDA (install the CUDA wheel first, then add Deep LVPM)
-   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-   pip install "git+https://github.com/alexjamesing/Deep_LVPM.git#egg=deep-lvpm[torch-gpu]"
+   # NVIDIA GPU (CUDA) – install CUDA-enabled PyTorch first, then:
+   pip install "git+https://github.com/alexjamesing/Deep_LVPM.git@keras3#egg=deep-lvpm[torch-gpu]"
 
 Virtualenv
 ----------
 
+To use Python's ``venv`` module instead of conda:
+
 .. code-block:: bash
 
    python3 -m venv dlvpm-k3
-   source dlvpm-k3/bin/activate
-   # Windows: dlvpm-k3\Scripts\activate
+   source dlvpm-k3/bin/activate           # Windows: dlvpm-k3\Scripts\activate
 
-   pip install "git+https://github.com/alexjamesing/Deep_LVPM.git#egg=deep-lvpm[tf-cpu]"
-   # or replace [tf-cpu] with another extra from the list above
+   # Use the same pip install commands shown in the conda section above,
+   # selecting exactly one backend extra (tf-* or torch-*).
 
 Verifying the backend
 ---------------------
 
-After installation, confirm which backend Keras detected:
+After installing, confirm which backend Keras selected:
 
 .. code-block:: bash
 
-   python -c "import keras, os; print('KERAS_BACKEND=', os.getenv('KERAS_BACKEND')); print('Detected:', keras.backend.backend())"
+   python -c "import keras, os; print('KERAS_BACKEND=', os.getenv('KERAS_BACKEND')); print('Detected backend:', keras.backend.backend())"
 
-If you need to switch:
+Set the backend explicitly if you have both runtimes available:
 
 .. code-block:: bash
 
-   export KERAS_BACKEND=tensorflow  # or: torch
+   export KERAS_BACKEND=tensorflow   # or: torch
 
-Notes
------
+Additional notes
+----------------
 
-* ``[tf-gpu]`` installs ``tensorflow[and-cuda]==2.20.0``.  The wheel bundles the CUDA runtime and is only available on Linux; it will fall back to CPU if no compatible GPU is present.
-* ``[tf-apple]`` installs ``tensorflow-macos==2.16.2`` and ``tensorflow-metal==1.2.0``.  Apple currently publishes wheels for Python 3.10–3.11—use one of those versions when targeting Apple Silicon.
-* ``[torch-gpu]`` intentionally has no dependencies to avoid pulling CPU wheels from PyPI.  Always install the CUDA builds from the PyTorch index first, then add the Deep LVPM extra.
+* ``tf-gpu`` is Linux-only and installs ``tensorflow[and-cuda]`` (no extra CUDA toolkit needed).
+* ``torch-gpu`` intentionally does **not** install PyTorch; install the CUDA wheel from ``pytorch.org`` first, then use the extra.
+* Tutorials in :mod:`deep_lvpm.tutorial` default to TensorFlow but can run on PyTorch by setting ``KERAS_BACKEND=torch`` before launching.

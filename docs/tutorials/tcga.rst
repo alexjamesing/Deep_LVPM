@@ -1,182 +1,244 @@
-TCGA Lung Cancer Tutorial (TensorFlow)
-======================================
+TCGA Lung Cancer Tutorial
+=========================
 
-This tutorial reproduces ``deep_lvpm/tutorial/tutorial_tcga_tf.py`` in a prose format.  We integrate five TCGA modalities—histology image features, RNA‑seq, DNA methylation, miRNA, and somatic mutations—using shallow residual encoders and a five-factor StructuralModel.  Along the way we highlight why each step matters.
+This tutorial demonstrates how to use DLVPM to integrate multiple data types in a lung cancer dataset derived from The Cancer Genome Atlas (TCGA).  In this example we link five different modalities: histological image features, RNA‑seq, methylation, miRNA and somatic mutation data.  Each view is encoded by a small residual fully connected network and connected via a five‑factor structural path model.
 
 Prerequisites
 -------------
 
-* Install :mod:`deep_lvpm` with TensorFlow extras.
-* Set ``KERAS_BACKEND=tensorflow`` before importing Keras so the backend is locked in.
-* The tutorial uses the sample NPZ files shipped in :mod:`deep_lvpm.data`, so no extra downloads are required.
+Ensure that :mod:`deep_lvpm` is installed as described on the :doc:`installation` page.  The tutorial uses the small sample datasets bundled with the package under ``deep_lvpm.data`` and can be run on CPU.
 
-Step 1 – Load the packaged multi-omics views
---------------------------------------------
+1. Load the multi‑omics dataset
+-------------------------------
 
-The helper below mirrors ``_load_tcga_sample`` from the script.  Keeping the order of the views consistent is crucial because the encoders, optimisers, and adjacency entries rely on it.
+We start by importing the necessary dependencies and loading the training data.  The data files are packaged as NumPy archives inside the ``deep_lvpm.data`` module.
 
 .. code-block:: python
 
-   import os
-   from importlib import resources
+    import os
+    os.environ["KERAS_BACKEND"] = "tensorflow"
 
-   import numpy as np
-   import tensorflow as tf
-   import keras
-   from keras import layers, regularizers
-   from keras.optimizers import Adam, schedules
+    import numpy as np
+    import tensorflow as tf
+    import keras
+    from keras import layers, regularizers, optimizers
+    from importlib import resources
 
-   from deep_lvpm.models.StructuralModel import StructuralModel
+    import deep_lvpm as DLVPM
+    from deep_lvpm.model import StructuralModel
 
-   os.environ.setdefault("KERAS_BACKEND", "tensorflow")
+    tf.config.run_functions_eagerly(False)   # keep graph mode for performance
 
-   def load_tcga_sample() -> list[np.ndarray]:
-       """Load the five training modalities bundled with deep_lvpm."""
+    with resources.as_file(resources.files("deep_lvpm.data") /
+                        "Lung_multiomics_sample_train.npz") as f:
+        arrays = np.load(f)
+        rnaseq      = arrays["rnaseq"]
+        snv         = arrays["snv"]
+        methylation = arrays["methylation"]
+        mirna       = arrays["mirna"]
+        histo20     = arrays["histo20"]
 
-       with resources.as_file(resources.files("deep_lvpm.data") / "Lung_multiomics_sample_train.npz") as handle:
-           arrays = np.load(handle)
-           rnaseq = arrays["rnaseq"]
-           snv = arrays["snv"]
-           methylation = arrays["methylation"]
-           mirna = arrays["mirna"]
-           histo20 = arrays["histo20"]
-       return [histo20, rnaseq, methylation, mirna, snv]
+    X_arr = [histo20, rnaseq, methylation, mirna, snv]   # preserve this order!
 
-   views = load_tcga_sample()
-   view_names = ["histo20", "rnaseq", "methylation", "mirna", "snv"]
 
-Step 2 – Build residual measurement encoders
---------------------------------------------
+2. Define measurement models
+----------------------------
 
-Each modality feeds into a shallow residual MLP.  The residual connection preserves the original features while allowing the encoder to learn corrections, which stabilises the downstream FactorLayer.
+Each data type is processed by a simple fully connected residual block.  You can experiment with different architectures or hyperparameters.
 
 .. code-block:: python
 
-   def residual_block(input_dim: int, name: str) -> keras.Model:
-       """Return a one-hidden-layer residual encoder used for tabular views."""
+ 
+    def residual_block(
+            input_dim: int,
+            kernel_reg_l1: float = 0.01,
+            kernel_reg_l2: float = 0.01,
+            dropout_rate: float = 0.5,
+            name: str = "residual_block"
+        ) -> keras.Model:
+        """
+        Builds a simple fully-connected residual block.
 
-       inputs = keras.Input(shape=(input_dim,), name=f"{name}_in")
-       x = layers.Dense(
-           input_dim,
-           activation="linear",
-           kernel_initializer=keras.initializers.Identity(),
-           kernel_regularizer=regularizers.l1_l2(l1=1e-2, l2=1e-2),
-           name=f"{name}_dense1",
-       )(inputs)
-       x = layers.BatchNormalization(momentum=0.9, name=f"{name}_bn1")(x)
-       x = layers.ReLU(name=f"{name}_relu")(x)
-       x = layers.Dense(
-           input_dim,
-           activation="linear",
-           kernel_initializer=keras.initializers.Identity(),
-           kernel_regularizer=regularizers.l1_l2(l1=1e-2, l2=1e-2),
-           name=f"{name}_dense2",
-       )(x)
-       x = layers.Add(name=f"{name}_add")([inputs, x])
-       x = layers.Dropout(0.5, name=f"{name}_drop")(x)
-       return keras.Model(inputs=inputs, outputs=x, name=f"{name}_encoder")
+        Parameters
+        ----------
+        input_dim : int
+            Number of features in the (flat) input vector.
+        kernel_reg_l1 : float, optional
+            L1 regularisation factor for dense layers (default 0.01).
+        kernel_reg_l2 : float, optional
+            L2 regularisation factor for dense layers (default 0.01).
+        dropout_rate : float, optional
+            Drop-out probability applied after the residual connection (default 0.5).
+        name : str, optional
+            Name for the returned `tf.keras.Model`.
 
-   encoders = [residual_block(view.shape[1], name) for view, name in zip(views, view_names)]
+        Returns
+        -------
+        tf.keras.Model
+            A Keras `Model` representing the residual block.
+        """
+        # -------- input --------
+        inputs = keras.Input(shape=(input_dim,), name=f"{name}_in")
 
-Step 3 – Configure the structural graph and learning schedule
--------------------------------------------------------------
+        # -------- first linear projection --------
+        x = layers.Dense(
+            input_dim,
+            activation="linear",
+            kernel_initializer=keras.initializers.Identity(),
+            kernel_regularizer=keras.regularizers.l1_l2(
+                l1=kernel_reg_l1, l2=kernel_reg_l2
+            ),
+            name=f"{name}_dense1",
+        )(inputs)
 
-Factor 2 acts as the central hub in this example.  We also create an exponential decay schedule for the Adam optimisers so the learning rate tapers over 300 epochs.
+        # -------- normalise & non-linear activation --------
+        x = layers.BatchNormalization(name=f"{name}_bn")(x)
+        x = layers.ReLU(name=f"{name}_relu")(x)
 
-.. code-block:: python
+        # -------- second linear projection --------
+        x = layers.Dense(
+            input_dim,
+            activation="linear",
+            kernel_initializer=keras.initializers.Identity(),
+            kernel_regularizer=keras.regularizers.l1_l2(
+                l1=kernel_reg_l1, l2=kernel_reg_l2
+            ),
+            name=f"{name}_dense2",
+        )(x)
 
-   adjacency = np.array(
-       [
-           [0, 1, 0, 0, 0],
-           [1, 0, 1, 1, 1],
-           [0, 1, 0, 0, 0],
-           [0, 1, 0, 0, 0],
-           [0, 1, 0, 0, 0],
-       ],
-       dtype="float32",
-   )
+        # -------- residual connection --------
+        x = layers.Add(name=f"{name}_add")([inputs, x])
 
-   batch_size = 256
-   epochs = 300
-   total_steps = max(1, (views[0].shape[0] // batch_size) * epochs)
+        # -------- optional regularisation --------
+        x = layers.Dropout(dropout_rate, name=f"{name}_drop")(x)
 
-   lr_schedule = schedules.ExponentialDecay(
-       initial_learning_rate=1e-4,
-       decay_steps=total_steps,
-       decay_rate=1e-5 / 1e-4,
-       staircase=False,
-   )
+        # -------- wrap into a model --------
+        return keras.Model(inputs=inputs, outputs=x, name=name)
 
-   regulariser_list = [regularizers.L1L2(l1=1e-2, l2=1e-2) for _ in encoders]
 
-Step 4 – Instantiate and fit the StructuralModel
-------------------------------------------------
+    model_list = [
+        residual_block(histo20.shape[1], name="histo20_enc"),
+        residual_block(rnaseq.shape[1],  name="rnaseq_enc"),
+        residual_block(methylation.shape[1], name="meth_enc"),
+        residual_block(mirna.shape[1],   name="mirna_enc"),
+        residual_block(snv.shape[1],     name="snv_enc"),
+    ]
 
-``tot_num`` should match the number of samples in each view (they are aligned).  Giving each measurement model its own optimiser keeps the optimisation statistics independent across modalities.
 
-.. code-block:: python
+3. Specify the structural path matrix
+-------------------------------------
 
-   structural_model = StructuralModel(
-       Path=adjacency,
-       model_list=encoders,
-       regularizer_list=regulariser_list,
-       tot_num=views[0].shape[0],
-       ndims=5,
-       orthogonalization="Moore-Penrose",
-       momentum=0.95,
-       epsilon=1e-3,
-       train_DLV=True,
-   )
-
-   optimiser_list = [Adam(learning_rate=lr_schedule) for _ in encoders]
-   structural_model.compile(optimizer=optimiser_list)
-
-   history = structural_model.fit(
-       views,
-       batch_size=batch_size,
-       epochs=epochs,
-       verbose=True,
-   )
-
-Step 5 – Inspect metrics and latent variables
----------------------------------------------
-
-The TensorFlow backend returns a metrics dictionary.  You can also call ``predict`` to obtain the raw DLV tensor for further analysis or visualisation.
+For this example we use a five‑factor model with asymmetric paths.  The matrix below defines which latent factors influence each other.
 
 .. code-block:: python
 
-   metrics = structural_model.evaluate(views, verbose=False)
-   metrics = {name: float(value) for name, value in metrics.items()}
-   print("Training metrics:", metrics)
-   print("Training history keys:", list(history.history))
+    ndims = 5        # number of latent factors
 
-   latent = structural_model.predict(views, verbose=False)
-   print("Latent tensor shape:", latent.shape)
+    Path = np.array(
+        [
+            [0, 1, 0, 0, 0],
+            [1, 0, 1, 1, 1],
+            [0, 1, 0, 0, 0],
+            [0, 1, 0, 0, 0],
+            [0, 1, 0, 0, 0],
+        ],
+        dtype="float32",
+    )
 
-Optional – Evaluate on the bundled test set
--------------------------------------------
+    batch_size  = 256
+    epochs      = 300
+    total_steps = int(rnaseq.shape[0] / batch_size) * epochs
 
-The repository also ships a held-out sample.  Load it with the same helper, evaluate the metrics, and compare them with the training run.
+    init_lr, final_lr = 1e-4, 1e-5
+
+    lr_schedule = optimizers.schedules.ExponentialDecay(
+        initial_learning_rate=init_lr,
+        decay_steps=total_steps,
+        decay_rate=final_lr / init_lr,
+        staircase=False
+    )
+
+    tot_num = rnaseq.shape[0] ## This is the total number of samples under analysis and is needed by DLVPM
+
+
+
+4. Build and compile the model
+-------------------------------
+
+We create a :class:`StructuralModel` instance and provide regularisers for the projection layers.  We then compile it with a list of optimisers, one per view.
 
 .. code-block:: python
 
-   def load_tcga_sample_test() -> list[np.ndarray]:
-       with resources.as_file(resources.files("deep_lvpm.data") / "Lung_multiomics_sample_test.npz") as handle:
-           arrays = np.load(handle)
-           rnaseq = arrays["rnaseq"]
-           snv = arrays["snv"]
-           methylation = arrays["methylation"]
-           mirna = arrays["mirna"]
-           histo20 = arrays["histo20"]
-       return [histo20, rnaseq, methylation, mirna, snv]
+    from keras import regularizers
 
-   test_views = load_tcga_sample_test()
-   test_metrics = structural_model.evaluate(test_views, verbose=False)
-   print("Test metrics:", {name: float(value) for name, value in test_metrics.items()})
+    regularizer_list = [regularizers.L1L2(l1=0.001, l2=0.001),regularizers.L1L2(l1=0.001, l2=0.001),regularizers.L1L2(l1=0.001, l2=0.001),regularizers.L1L2(l1=0.001, l2=0.001),regularizers.L1L2(l1=0.001, l2=0.001)] ## These regularizers are applied to the final "projection" layer of the DLVPM model, used internally
 
-Next steps
-----------
+    DLVPM_Structural_instance = StructuralModel(Path, model_list, regularizer_list, tot_num, ndims, momentum=0.95,epsilon=0.001, orthogonalization='Moore-Penrose', train_DLV =True)
 
-* Adjust the adjacency matrix to express different hypotheses about factor connectivity.
-* Swap in deeper encoders for modalities that benefit from additional capacity.
-* Enable GPU execution for faster experimentation; the sample dataset is small enough for CPU but larger cohorts will benefit from acceleration.
+    opt_list = [keras.optimizers.Adam(learning_rate=lr_schedule),keras.optimizers.Adam(learning_rate=lr_schedule),keras.optimizers.Adam(learning_rate=lr_schedule),keras.optimizers.Adam(learning_rate=lr_schedule),keras.optimizers.Adam(learning_rate=lr_schedule)]
+    DLVPM_Structural_instance.compile(optimizer=opt_list)
+
+
+5. Train and evaluate
+---------------------
+
+Training proceeds with the standard Keras ``fit`` interface.  The ``evaluate`` method returns both the mean squared error and the mean correlation between connected data types.
+
+.. code-block:: python
+
+    DLVPM_Structural_instance.fit(X_arr, batch_size=batch_size, epochs=epochs,verbose=True)
+    mean_corr = DLVPM_Structural_instance.evaluate(X_arr)
+
+    print('The mean correlation between data-types connected by the path model is r=' + str(mean_corr[1]))
+
+
+6. Evaluate on the test set
+---------------------------
+
+We load the separate test dataset and compute the mean correlation of the learned DLVs.
+
+.. code-block:: python
+
+    with resources.as_file(resources.files("deep_lvpm.data") /
+                        "Lung_multiomics_sample_test.npz") as f:
+        arrays = np.load(f)
+        rnaseq_test      = arrays["rnaseq"]
+        snv_test         = arrays["snv"]
+        methylation_test = arrays["methylation"]
+        mirna_test       = arrays["mirna"]
+        histo20_test     = arrays["histo20"]
+
+    X_arr_test = [histo20_test, rnaseq_test, methylation_test, mirna_test, snv_test]   # Here, is the full test dataset list
+    mean_corr_test = DLVPM_Structural_instance.evaluate(X_arr_test)
+
+    print('The mean correlation between data-types connected by the path model is r=' + str(mean_corr_test[1]))
+
+
+7. Inspect the learned latent variables
+--------------------------------------
+
+To extract the latent factors for each view, call ``predict``.  This returns a tensor with shape ``(n_samples, ndims, n_views)``.
+
+.. code-block:: python
+
+    test_DLVs = DLVPM_Structural_instance.predict(X_arr_test) ## Here, we obtain the full set of test_DLVs
+
+    ## Associations between the first set of DLVs are:
+    print(np.corrcoef(test_DLVs[:,0,:].T))
+    ## Associations between the second set of DLVs are:
+    print(np.corrcoef(test_DLVs[:,1,:].T))
+
+
+
+8. Save the model
+-----------------
+
+Finally, save your trained model to disk in the ``.keras`` format:
+
+.. code-block:: python
+
+    DLVPM_Structural_instance.save("/path/to/output_folder/DLVPM_Model.keras")
+
+This tutorial illustrates how DLVPM can be applied to real multi‑omics data.  You can extend this example by changing the measurement models, experimenting with different regularisation schemes, or altering the structural path matrix to test different hypotheses about cross‑modal relationships.
+
+If this deep dive was useful, please `star <https://github.com/alexjamesing/Deep_LVPM>`_ the repository—community support signals that DLVPM matters and helps us justify the time invested in future improvements.

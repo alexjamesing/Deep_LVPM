@@ -268,64 +268,6 @@ class StructuralModel(keras.Model):
         corr = self.corr_metric(y, y_pred, vie)
         return loss, mse_loss, corr
 
-
-    # def _step_torch(self, vie, inputs_v, y, scale_fact):
-       
-
-    #     model = self.model_list[vie]
-
-    #     # --------- 0) Zero grads (works for both torch optimizers and Keras optimizers) ---------
-    #     # If you use a pure torch optimizer:
-    #     if hasattr(model.optimizer, "zero_grad"):
-    #         model.optimizer.zero_grad(set_to_none=True)
-    #     else:
-    #         # Keras Optimizer path: clear .grad on the underlying torch tensors
-    #         for v in model.trainable_variables:
-    #             t = getattr(v, "value", v)
-    #             if t.grad is not None:
-    #                 t.grad = None  # or: t.grad.zero_()
-
-    #     # --------- 1) Forward ---------
-    #     y_pred = model(inputs_v, training=True)
-    #     y_pred = self._normalize_pred(y_pred, scale_fact)
-
-    #     mse_loss = self.mse_loss(y, y_pred, vie)
-
-    #     # Sum any internal/regularization losses from the Keras model
-    #     if getattr(model, "losses", None):
-    #         internal_loss = torch.stack([
-    #             (l if torch.is_tensor(l)
-    #             else torch.tensor(l, dtype=mse_loss.dtype, device=mse_loss.device))
-    #             for l in model.losses
-    #         ]).sum()
-    #     else:
-    #         internal_loss = torch.zeros((), dtype=mse_loss.dtype, device=mse_loss.device)
-
-    #     loss = mse_loss + internal_loss
-
-    #     # --------- 2) Backward (classic) ---------
-    #     loss.backward()
-
-    #     # --------- 3) Apply update ---------
-    #     if hasattr(model.optimizer, "step"):
-    #         # Pure torch optimizer (the most "classic" flow)
-    #         model.optimizer.step()
-    #     else:
-    #         # Keras Optimizer: collect grads from .grad and pass to apply_gradients
-    #         trainable_vars = model.trainable_variables
-    #         grads_from_param = []
-    #         for v in trainable_vars:
-    #             t = getattr(v, "value", v)
-    #             g = t.grad
-    #             if g is None:
-    #                 g = torch.zeros_like(t)  # keep shapes aligned; unused params possible
-    #             grads_from_param.append(g)
-    #         model.optimizer.apply_gradients(zip(grads_from_param, trainable_vars))
-
-    #     corr = self.corr_metric(y, y_pred, vie)
-    #     return loss, mse_loss, corr
-
-
     def _weight_normaliser(self,inputs):
         """This is an internal function designed to normalise weights
         after each batch"""

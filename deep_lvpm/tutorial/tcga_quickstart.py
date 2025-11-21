@@ -20,7 +20,7 @@ import numpy as np
 import keras
 from keras import layers, regularizers
 
-from deep_lvpm.models.StructuralModel import StructuralModel
+from deep_lvpm.model import StructuralModel
 
 DATA_KEYS: Sequence[str] = ("histo20", "rnaseq", "methylation", "mirna", "snv")
 TRAIN_FILE = "Lung_multiomics_sample_train.npz"
