@@ -1,9 +1,7 @@
 Siamese CIFAR-10 Tutorial
 =========================
 
-This tutorial explains every step of :mod:`deep_lvpm.tutorial.tutorial_siamese_tf`, which trains a
-Siamese StructuralModel on CIFAR-10.  The code below is copied verbatim from the script so you can
-follow along without editing anything.  A **GPU is required**: the batch size is 2048 and the encoder
+ A **GPU is required** for this tutorial: the batch size is 2048 and the encoder
 trains for 500 epochs, which is impractical on CPU-only setups.  Apple Silicon (TensorFlow Metal) or
 CUDA-enabled NVIDIA GPUs both work.
 This tutorial shows how DLVPM can be used to construct a meaninful represenation of a single data type. 
@@ -15,7 +13,7 @@ Prerequisites
 Install :mod:`deep_lvpm` as described on the :doc:`/installation` page, ensure the TensorFlow backend
 is available, and set ``KERAS_BACKEND=tensorflow`` before launching the tutorial.
 
-0. Imports and runtime configuration
+1. Imports and runtime configuration
 ------------------------------------
 
 The script pins the TensorFlow backend, enables deterministic ops, and prepares the GPU runtime before
@@ -62,7 +60,7 @@ any data processing happens.  All necessary libraries are imported here.
    tf.config.run_functions_eagerly(False)
 
 
-1. Load and preprocess CIFAR-10
+2. Load and preprocess CIFAR-10
 -------------------------------
 
 CIFAR-10 images are loaded, scaled to ``[0, 1]``, and labels are stored both as class IDs and
@@ -96,7 +94,7 @@ one-hot encodings for later evaluation.  Seeds are fixed to keep splits and augm
    cutoff = int(num_train * (1 - VAL_FRACTION))
    x_tr, x_val = x_train[indices[:cutoff]], x_train[indices[cutoff:]]
 
-2. Create siamese augmentations and datasets
+3. Create siamese augmentations and datasets
 ----------------------------------------------------
 
 A ``Sequential`` augmentation model builds two independent views per image (random crops, resizing,
@@ -143,13 +141,13 @@ pipelines that emit ``([view_one, view_two],)`` batches for training and validat
        x_val, batch_size=BATCH_SIZE, shuffle=False, training=True
    )
 
-3. Define the shared encoder and StructuralModel
+4. Define the shared encoder and StructuralModel
 --------------------------------------------------------
 
 The Siamese branches share a single convolutional encoder (three Conv-BN/Dense blocks) that expands
 to a 4096-dimensional latent space.  The same model instance is supplied twice in ``model_list`` so
 weights stay tied.  A two-node adjacency matrix links the branches, and ``orthogonalization="zca"``
-stabilises the high-dimensional projection head.
+orthogonalises deep latent variables constructed by the projection head.
 
 .. code-block:: python
 
@@ -200,7 +198,7 @@ stabilises the high-dimensional projection head.
    ]
    dlvpm_model.compile(optimizers)
 
-4. Train the Siamese StructuralModel
+5. Train the Siamese StructuralModel
 -------------------------------------------
 
 Training uses the standard ``fit`` call with the Siamese datasets.  Each epoch reports the extended
@@ -212,7 +210,7 @@ metrics introduced for StructuralModel—``total_loss``, ``cross_metric``, ``mse
    EPOCHS = 500
    dlvpm_model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, verbose=True)
 
-5. Remove projection layers before evaluation
+6. Remove projection layers before evaluation
 ---------------------------------------------
 
 Self-supervised Siamese methods typically discard the projection head before downstream evaluation
@@ -239,7 +237,7 @@ Self-supervised Siamese methods typically discard the projection head before dow
    # Strip the projection head before exporting embeddings.
    image_model = remove_last_layers(dlvpm_model.model_list[0], n=7)
 
-6. Export embeddings and run a linear probe
+7. Export embeddings and run a linear probe
 --------------------------------------------------
 
 The truncated encoder generates embeddings for the train/test splits.  A scikit-learn pipeline applies
@@ -270,15 +268,6 @@ full classification report, and confusion matrix act as the final evaluation.
    print("Confusion matrix:")
    print(confusion_matrix(y_test_cat, predictions))
 
-Running the tutorial
---------------------
-
-Launch the script directly:
-
-.. code-block:: bash
-
-   export KERAS_BACKEND=tensorflow
-   python -m deep_lvpm.tutorial.tutorial_siamese_tf
 
 Expect ~5 seconds per training step on Apple Silicon, with higher throughput on modern CUDA GPUs.
 The downstream linear SVM typically achieves >0.6 accuracy on CIFAR-10, far higher than chance, 

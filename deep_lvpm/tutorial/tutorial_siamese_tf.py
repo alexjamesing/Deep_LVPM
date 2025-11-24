@@ -175,13 +175,13 @@ dlvpm_model = StructuralModel(
 
 # Compile with branch-specific optimisers.
 optimizers = [
-    keras.optimizers.Adam(learning_rate=1e-4),
-    keras.optimizers.Adam(learning_rate=1e-4),
+    keras.optimizers.Adam(learning_rate=1e-5),
+    keras.optimizers.Adam(learning_rate=1e-5),
 ]
 dlvpm_model.compile(optimizers)
 
 # Train the siamese model and monitor validation performance.
-EPOCHS = 20
+EPOCHS = 500
 dlvpm_model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, verbose=True)
 
 

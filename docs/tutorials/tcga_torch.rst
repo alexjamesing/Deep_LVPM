@@ -17,7 +17,7 @@ set ``KERAS_BACKEND=torch`` before launching the tutorial.  The bundled sample d
 1. Load the TCGA dataset and initialise the Torch backend
 ---------------------------------------------------------
 
-We begin by forcing the PyTorch backend, enabling MPS fallbacks on Apple hardware, importing all
+We begin by forcing the PyTorch backend, importing all
 dependencies, and loading the multi-omics training arrays.
 
 .. code-block:: python
@@ -26,7 +26,6 @@ dependencies, and loading the multi-omics training arrays.
 
     import os
     os.environ.setdefault("KERAS_BACKEND", "torch")
-    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
     import numpy as np
     import torch
@@ -285,15 +284,6 @@ PyTorch weights + custom layers).
 
     DLVPM_Structural_instance.save("/path/to/output_folder/DLVPM_Model.keras")
 
-Running the tutorial
---------------------
-
-Execute the script directly to reproduce these steps:
-
-.. code-block:: bash
-
-    export KERAS_BACKEND=torch
-    python -m deep_lvpm.tutorial.tutorial_tcga_torch
 
 The PyTorch backend delivers parity with the TensorFlow example while letting you integrate
 PyTorch-native measurement modules into StructuralModel.

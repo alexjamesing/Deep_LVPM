@@ -27,8 +27,8 @@ The constructor has the following signature:
 
 where:
 
-* **Path** (*array-like*): Binary adjacency matrix defining which latent factors are connected between data views.  The shape of ``Path`` determines the number of latent factors.
-* **model_list** (*list of keras.Model*): One measurement model per data view.  Each model should accept a single input tensor and output a latent representation of arbitrary dimension.
+* **Path** (*array-like*): Binary adjacency matrix defining which latent factors are connected between data views.  
+* **model_list** (*list of keras.Model*): One measurement model per data view. 
 * **regularizer_list** (*list*): List of regulariser objects applied to the final projection layer of each measurement model.  May be ``None`` for no regularisation.
 * **tot_num** (*int*): Total number of samples used in training.  This is used internally for scaling covariance matrices.
 * **ndims** (*int*): Number of orthogonal latent variables (DLVs) to extract.
@@ -40,20 +40,6 @@ where:
 * **diag_offset** (*float, optional*): Additional diagonal jitter applied when using ZCA orthogonalisation to keep covariance matrices well-conditioned.
 * **kwargs**: Forwarded to ``keras.Model`` (e.g., ``name`` or ``dtype``).
 
-Attributes
-----------
-
-A :class:`StructuralModel` instance exposes several public attributes:
-
-* **Path** – the binary adjacency matrix.
-* **model_list** – list of measurement models.
-* **regularizer_list** – list of regularisers for projection layers.
-* **tot_num** – total number of samples.
-* **ndims** – number of latent variables.
-* **loss_tracker_total** – Keras metric tracking total loss during training.
-* **corr_tracker** – Keras metric tracking the average correlation between connected views.
-* **loss_tracker_mse** – Keras metric tracking mean squared error.
-* **loss_tracker_redundancy** – Keras metric tracking the redundancy penalty (average within-view correlation of latent factors).
 
 Common methods
 --------------
