@@ -6,7 +6,7 @@ This tutorial demonstrates how to build and train a simple DLVPM model that link
 Prerequisites
 -------------
 
-Make sure you have installed :mod:`deep_lvpm` and its dependencies as described in the :doc:`installation` page.  This example uses only CPU and should run in a few minutes on a modern laptop.
+Make sure you have installed :mod:`deep_lvpm` and its dependencies as described in the :doc:`/installation` page.  This example uses only CPU and should run in a few minutes on a modern laptop.
 
 1. Prepare the data
 -------------------
@@ -95,9 +95,9 @@ DLVPM models use a binary **path matrix** to specify which latent factors are co
                        [1, 0]], dtype="float32")
 
 4. Build and compile the StructuralModel
----------------------------------------
+-----------------------------------------------
 
-We instantiate :class:`deep_lvpm.models.StructuralModel.StructuralModel` with the path matrix, the measurement models, and optional regularizers.  We must also specify the total number of samples and the dimensionality of the latent space (``ndims``).
+We instantiate :class:`deep_lvpm.model.StructuralModel` with the path matrix, the measurement models, and optional regularizers.  We must also specify the total number of samples and the dimensionality of the latent space (``ndims``).
 
 .. code-block:: python
 

@@ -181,7 +181,7 @@ optimizers = [
 dlvpm_model.compile(optimizers)
 
 # Train the siamese model and monitor validation performance.
-EPOCHS = 500
+EPOCHS = 20
 dlvpm_model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, verbose=True)
 
 

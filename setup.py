@@ -51,13 +51,3 @@ setuptools.setup(
     package_data={"deep_lvpm.data": ["*.npz"]},
 )
 
-### Updated install instructions:
-# pip install "git+https://github.com/alexjamesing/Deep_LVPM.git#egg=deep-lvpm[tf-cpu]"
-# pip install "git+https://github.com/alexjamesing/Deep_LVPM.git#egg=deep-lvpm[tf-gpu]"
-# pip install "git+https://github.com/alexjamesing/Deep_LVPM.git#egg=deep-lvpm[tf-apple]"
-# pip install "git+https://github.com/alexjamesing/Deep_LVPM.git#egg=deep-lvpm[torch-cpu]"
-# pip install "git+https://github.com/alexjamesing/Deep_LVPM.git#egg=deep-lvpm[torch-apple]"
-# pip install --index-url https://download.pytorch.org/whl/cu124 \
-#    torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0
-# pip install "git+https://github.com/alexjamesing/Deep_LVPM.git#egg=deep-lvpm[torch-gpu]"
-# (Install PyTorch CUDA wheels from the official index before installing the torch-gpu extra.)

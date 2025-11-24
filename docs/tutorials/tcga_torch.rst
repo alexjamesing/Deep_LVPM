@@ -10,7 +10,7 @@ structural path model.
 Prerequisites
 -------------
 
-Install :mod:`deep_lvpm` with the ``torch-*`` extras described on the :doc:`installation` page and
+Install :mod:`deep_lvpm` with the ``torch-*`` extras described on the :doc:`/installation` page and
 set ``KERAS_BACKEND=torch`` before launching the tutorial.  The bundled sample datasets under
 ``deep_lvpm.data`` are used, so no external downloads are required.
 

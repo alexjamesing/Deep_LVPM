@@ -12,7 +12,7 @@ More information on this can be found in the publication detailing this method.
 Prerequisites
 -------------
 
-Install :mod:`deep_lvpm` as described on the :doc:`installation` page, ensure the TensorFlow backend
+Install :mod:`deep_lvpm` as described on the :doc:`/installation` page, ensure the TensorFlow backend
 is available, and set ``KERAS_BACKEND=tensorflow`` before launching the tutorial.
 
 0. Imports and runtime configuration
@@ -97,7 +97,7 @@ one-hot encodings for later evaluation.  Seeds are fixed to keep splits and augm
    x_tr, x_val = x_train[indices[:cutoff]], x_train[indices[cutoff:]]
 
 2. Create siamese augmentations and datasets
--------------------------------------------
+----------------------------------------------------
 
 A ``Sequential`` augmentation model builds two independent views per image (random crops, resizing,
 flips, occasional grayscale).  ``make_siamese_views_dataset`` wraps NumPy arrays into ``tf.data``
@@ -144,7 +144,7 @@ pipelines that emit ``([view_one, view_two],)`` batches for training and validat
    )
 
 3. Define the shared encoder and StructuralModel
------------------------------------------------
+--------------------------------------------------------
 
 The Siamese branches share a single convolutional encoder (three Conv-BN/Dense blocks) that expands
 to a 4096-dimensional latent space.  The same model instance is supplied twice in ``model_list`` so
@@ -201,7 +201,7 @@ stabilises the high-dimensional projection head.
    dlvpm_model.compile(optimizers)
 
 4. Train the Siamese StructuralModel
------------------------------------
+-------------------------------------------
 
 Training uses the standard ``fit`` call with the Siamese datasets.  Each epoch reports the extended
 metrics introduced for StructuralModel—``total_loss``, ``cross_metric``, ``mse_loss``, and
@@ -240,7 +240,7 @@ Self-supervised Siamese methods typically discard the projection head before dow
    image_model = remove_last_layers(dlvpm_model.model_list[0], n=7)
 
 6. Export embeddings and run a linear probe
-------------------------------------------
+--------------------------------------------------
 
 The truncated encoder generates embeddings for the train/test splits.  A scikit-learn pipeline applies
 ``StandardScaler`` and ``LinearSVC`` to measure how linearly separable the features are.  Accuracy,
@@ -282,8 +282,8 @@ Launch the script directly:
 
 Expect ~5 seconds per training step on Apple Silicon, with higher throughput on modern CUDA GPUs.
 The downstream linear SVM typically achieves >0.6 accuracy on CIFAR-10, far higher than chance, 
-and comparable with similar methods such as BarlowTwins (ref), trained for the same amount of time 
-on the same dataset.
+and comparable with similar methods such as BarlowTwins https://keras.io/examples/vision/barlow_twins/, 
+trained for the same amount of time on the same dataset.
 
 If this deep dive was useful, please `star <https://github.com/alexjamesing/Deep_LVPM>`_ the repository—community
 support signals that DLVPM matters and helps us justify the time invested in future improvements.

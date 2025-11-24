@@ -6,7 +6,7 @@ This tutorial demonstrates how to use DLVPM to integrate multiple data types in 
 Prerequisites
 -------------
 
-Ensure that :mod:`deep_lvpm` is installed as described on the :doc:`installation` page.  The tutorial uses the small sample datasets bundled with the package under ``deep_lvpm.data`` and can be run on CPU.
+Ensure that :mod:`deep_lvpm` is installed as described on the :doc:`/installation` page.  The tutorial uses the small sample datasets bundled with the package under ``deep_lvpm.data`` and can be run on CPU.
 
 1. Load the multi‑omics dataset
 -------------------------------
@@ -215,7 +215,7 @@ We load the separate test dataset and compute the mean correlation of the learne
 
 
 7. Inspect the learned latent variables
---------------------------------------
+------------------------------------------------
 
 To extract the latent factors for each view, call ``predict``.  This returns a tensor with shape ``(n_samples, ndims, n_views)``.
 

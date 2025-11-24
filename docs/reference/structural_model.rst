@@ -1,7 +1,7 @@
 StructuralModel
 ===============
 
-The :class:`deep_lvpm.models.StructuralModel.StructuralModel` class is the core of the DLVPM toolbox.  It inherits from ``keras.Model`` (Keras 3, multi-backend) and coordinates multiple sub-models, termed **measurement models** (one per data view), together with a binary **path model**, which specifies how latent factors are connected across views.  During training, the model learns sets of orthogonal deep latent variables (DLVs) that maximise correlation between the outputs of the measurement models while respecting the path structure.  The implementation runs unchanged on either the TensorFlow or PyTorch backends as long as the appropriate backend is selected when importing Keras.
+The :class:`deep_lvpm.model.StructuralModel` class is the core of the DLVPM toolbox.  It inherits from ``keras.Model`` (Keras 3, multi-backend) and coordinates multiple sub-models, termed **measurement models** (one per data view), together with a binary **path model**, which specifies how latent factors are connected across views.  During training, the model learns sets of orthogonal deep latent variables (DLVs) that maximise correlation between the outputs of the measurement models while respecting the path structure.  The implementation runs unchanged on either the TensorFlow or PyTorch backends as long as the appropriate backend is selected when importing Keras.
 
 Parameters
 ----------
