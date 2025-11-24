@@ -1,7 +1,7 @@
 Siamese CIFAR-10 Tutorial
 =========================
 
- A **GPU is required** for this tutorial: the batch size is 2048 and the encoder
+A GPU is required for this tutorial: the batch size is 2048 and the encoder
 trains for 500 epochs, which is impractical on CPU-only setups.  Apple Silicon (TensorFlow Metal) or
 CUDA-enabled NVIDIA GPUs both work.
 This tutorial shows how DLVPM can be used to construct a meaninful represenation of a single data type. 
