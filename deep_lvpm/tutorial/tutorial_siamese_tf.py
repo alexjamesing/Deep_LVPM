@@ -63,7 +63,7 @@ np.random.seed(SEED)
 keras.utils.set_random_seed(SEED)
 
 # Split training set into train/validation partitions.
-VAL_FRACTION = 0.1
+VAL_FRACTION = 0.2
 num_train = x_train.shape[0]
 indices = np.arange(num_train)
 rng = np.random.default_rng(SEED)
@@ -116,7 +116,7 @@ val_ds = make_siamese_views_dataset(
 )
 
 # Build the shared encoder used by both branches of the structural model.
-WEIGHT_DECAY = 0.0
+WEIGHT_DECAY = 0.01
 NDIMS = 4096
 CIFAR_image_model = keras.Sequential(
     [
@@ -148,10 +148,8 @@ CIFAR_image_model = keras.Sequential(
         layers.Dense(512),
         layers.BatchNormalization(),
         layers.Dense(NDIMS),
-        layers.BatchNormalization(),
-        layers.ReLU(),
-        layers.Dense(NDIMS),
-        layers.BatchNormalization(),
+        layers.BatchNormalization()
+
     ],
     name="cifar_image_model",
 )
@@ -159,7 +157,7 @@ CIFAR_image_model = keras.Sequential(
 # Build siamese structural model with shared encoder replicas.
 model_list = [CIFAR_image_model, CIFAR_image_model]
 adjacency = tf.constant([[0, 1], [1, 0]], dtype="float32")
-regularizers = [None, None]
+regularizers = [keras.regularizers.l2(WEIGHT_DECAY),keras.regularizers.l2(WEIGHT_DECAY)]
 
 dlvpm_model = StructuralModel(
     adjacency,
@@ -175,13 +173,13 @@ dlvpm_model = StructuralModel(
 
 # Compile with branch-specific optimisers.
 optimizers = [
-    keras.optimizers.Adam(learning_rate=1e-5),
-    keras.optimizers.Adam(learning_rate=1e-5),
+    keras.optimizers.Adam(learning_rate=1e-4),
+    keras.optimizers.Adam(learning_rate=1e-4),
 ]
 dlvpm_model.compile(optimizers)
 
 # Train the siamese model and monitor validation performance.
-EPOCHS = 500
+EPOCHS = 200
 dlvpm_model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, verbose=True)
 
 
@@ -202,7 +200,7 @@ def remove_last_layers(model: keras.Model, n: int = 1, name: str | None = None) 
 
 
 # Strip the projection head before exporting embeddings.
-image_model = remove_last_layers(dlvpm_model.model_list[0], n=7)
+image_model = remove_last_layers(dlvpm_model.model_list[0], n=4)
 
 # Generate embeddings for downstream linear evaluation.
 train_dlvs = image_model.predict(x_train, batch_size=32, verbose=1)
