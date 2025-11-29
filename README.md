@@ -11,6 +11,7 @@ If you find this project valuable, please consider giving it a star on GitHub.  
 
 ![Chord animation](chord_animation.gif)
 
+The gif above shows a plot of model training in progress on a three factor DLVPM model linking different omics and Imaging data types from Lung Cancer patients. The dataset this model is trained on is included in this package.
 
 # Installing deep-lvpm (keras 3 / multi-backend) — keras3 branch
 
