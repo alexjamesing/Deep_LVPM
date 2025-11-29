@@ -9,6 +9,9 @@ Backend-agnostic with Keras 3: DLVPM is implemented on Keras 3 and runs backend-
 
 If you find this project valuable, please consider giving it a star on GitHub.  Your support helps others discover the project and motivates continued development!
 
+![Chord animation](chord_animation.gif)
+
+
 # Installing deep-lvpm (keras 3 / multi-backend) — keras3 branch
 
 > **TL;DR:** This branch uses **Keras 3** (multi-backend). You must install **one backend** (TensorFlow **or** PyTorch) via the provided extras. Then install from the **`keras3`** branch URL.
