@@ -136,7 +136,7 @@ class FactorLayer(keras.layers.Layer):
     def weight_normalizer(self, inputs):
         """Re-normalize projection weight vectors; return normalized DLVs."""
 
-        y, scale_fact = inputs
+        y, scale_fact, train_DLV = inputs
 
         for i in range(self.ndims):
             yi = y[:, i]

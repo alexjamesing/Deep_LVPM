@@ -63,7 +63,7 @@ np.random.seed(SEED)
 keras.utils.set_random_seed(SEED)
 
 # Split training set into train/validation partitions.
-VAL_FRACTION = 0.2
+VAL_FRACTION = 0.1
 num_train = x_train.shape[0]
 indices = np.arange(num_train)
 rng = np.random.default_rng(SEED)
@@ -109,15 +109,16 @@ def make_siamese_views_dataset(x, batch_size=256, shuffle=True, training=True):
 
 # Create datasets for siamese training.
 train_ds = make_siamese_views_dataset(
-    x_tr, batch_size=BATCH_SIZE, shuffle=True, training=True
+    x_tr, batch_size=BATCH_SIZE, shuffle=False, training=True
 )
 val_ds = make_siamese_views_dataset(
     x_val, batch_size=BATCH_SIZE, shuffle=False, training=True
 )
 
 # Build the shared encoder used by both branches of the structural model.
-WEIGHT_DECAY = 0.01
-NDIMS = 4096
+WEIGHT_DECAY = 0
+NDIMS = 2048
+
 CIFAR_image_model = keras.Sequential(
     [
         keras.Input(shape=INPUT_SHAPE),
@@ -145,9 +146,9 @@ CIFAR_image_model = keras.Sequential(
             kernel_regularizer=keras.regularizers.l2(WEIGHT_DECAY),
         ),
         layers.GlobalAveragePooling2D(),
-        layers.Dense(512),
+        layers.Dense(512, activation="relu"),
         layers.BatchNormalization(),
-        layers.Dense(NDIMS),
+        layers.Dense(NDIMS, activation="relu"),
         layers.BatchNormalization()
 
     ],
@@ -205,6 +206,12 @@ image_model = remove_last_layers(dlvpm_model.model_list[0], n=4)
 # Generate embeddings for downstream linear evaluation.
 train_dlvs = image_model.predict(x_train, batch_size=32, verbose=1)
 test_dlvs = image_model.predict(x_test, batch_size=32, verbose=1)
+
+test_ds = make_siamese_views_dataset(
+    x_test, batch_size=BATCH_SIZE, shuffle=False, training=True
+)
+
+dlvpm_model.evaluate(test_ds)
 
 print(f"Train DLVs shape: {train_dlvs.shape}")
 print(f"Test  DLVs shape: {test_dlvs.shape}")

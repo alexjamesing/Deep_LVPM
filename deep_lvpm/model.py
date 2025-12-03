@@ -283,7 +283,7 @@ class StructuralModel(keras.Model):
         y_list = []
         for vie in range(len(self.model_list)):
             y_view = y[:, :, vie]
-            y_view = self.model_list[vie].layers[-1].weight_normalizer([y_view, scale_fact])
+            y_view = self.model_list[vie].layers[-1].weight_normalizer([y_view, scale_fact, self.train_DLV])
             y_list.append(y_view)
 
         y = ops.stack(y_list, axis=-1)
@@ -495,7 +495,7 @@ class StructuralModel(keras.Model):
         return shape
     
 
-    def calculate_redundancy(self, X, epsilon=1e-8):
+    def calculate_redundancy(self, Y, epsilon=1e-8):
         """
         Args:
             X: Tensor / KerasTensor, shape (N, D). Each column is a variable.
@@ -504,25 +504,25 @@ class StructuralModel(keras.Model):
         Returns:
             Scalar tensor: mean(|corr(i, j)|) over all i != j.
         """
-        X = ops.convert_to_tensor(X)
-        X = ops.cast(X, "float32")
+        Y = ops.convert_to_tensor(Y)
+        Y = ops.cast(Y, "float32")
 
         # Center columns
-        col_mean = ops.mean(X, axis=0, keepdims=True)
-        Xc = X - col_mean
+        col_mean = ops.mean(Y, axis=0, keepdims=True)
+        Yc = Y - col_mean
 
         backend = keras.backend.backend()
 
         # Sample-size for covariance
-        n = self._shape_fn(Xc)[0]
-        n_f = ops.cast(n, X.dtype)
+        n = self._shape_fn(Yc)[0]
+        n_f = ops.cast(n, Y.dtype)
         denom_n = ops.maximum(n_f - 1.0, 1.0)  # guard when N == 1
 
         # Covariance between columns: (D x D)
-        cov = ops.matmul(ops.transpose(Xc), Xc) / denom_n
+        cov = ops.matmul(ops.transpose(Yc), Yc) / denom_n
 
         # Column std devs (D,)
-        var = ops.sum(Xc * Xc, axis=0) / denom_n
+        var = ops.sum(Yc * Yc, axis=0) / denom_n
         std = ops.sqrt(ops.maximum(var, epsilon))
 
         # Correlation matrix: cov / (std_i * std_j)
@@ -562,7 +562,7 @@ class StructuralModel(keras.Model):
             mean_centered = dim_DLVs - ops.mean(dim_DLVs, axis=0)
             std_dev = ops.std(dim_DLVs, axis=0) + eps
             normalized = mean_centered / std_dev
-            correlation_matrix = ops.matmul(normalized, normalized, transpose_a=True) / n_samples
+            correlation_matrix = ops.matmul(ops.transpose(normalized), normalized) / n_samples
             correlation_matrices.append(correlation_matrix)
 
         return correlation_matrices

@@ -229,8 +229,51 @@ To extract the latent factors for each view, call ``predict``.  This returns a t
     print(np.corrcoef(test_DLVs[:,1,:].T))
 
 
+8. Visualise cross‑modal correlations
+------------------------------------
 
-8. Save the model
+To understand how each latent factor relates the modalities to one another, compute a
+per‑factor correlation matrix and render a row of chord diagrams—one panel per DLV. Nodes are
+modalities; edge thickness and opacity encode correlation strength (|r|). Edges below
+``min_corr`` are hidden; optional numeric edge labels show the exact ``r``.
+
+.. code-block:: python
+
+    # Correlation matrices across modalities for each latent factor (DLV1, DLV2, ...)
+    corr_mat = DLVPM_Structural_instance.calculate_corrmat(test_DLVs)
+
+    from deep_lvpm.plot import plot_correlation_chord_row
+
+    data_names = ["Histology", "RNASeq", "miRNASeq", "Methylation", "SNVs"]
+
+    fig, ax = plot_correlation_chord_row(
+        corr_mat,
+        data_names,
+        min_corr=0.0,                 # filter weaker links to reduce clutter
+        node_cmap_name="Pastel1",     # pastel node colours
+        figure_title=(
+            "Correlation Plots Between Omics and Imaging Data Types in Lung Cancer"
+        ),
+        show_edge_labels=True,
+        dpi=300,
+        show=True,
+    )
+
+Try increasing ``min_corr`` (e.g. ``0.2`` or ``0.3``) to emphasise the strongest cross‑modal
+associations.
+
+
+.. figure:: /_static/tutorial_figure.png
+   :alt: Row of chord diagrams showing cross‑modal correlations for each DLV.
+   :width: 100%
+   :align: center
+
+   Example output from ``plot_correlation_chord_row``. Each panel corresponds to a latent
+   factor (DLV). Nodes are modalities; edge thickness/opacity encode |r| between modalities
+   for that DLV. Labels can be toggled with ``show_edge_labels``.
+
+
+9. Save the model
 -----------------
 
 Finally, save your trained model to disk in the ``.keras`` format:

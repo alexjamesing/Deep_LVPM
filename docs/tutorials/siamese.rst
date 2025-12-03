@@ -2,7 +2,7 @@ Siamese CIFAR-10 Tutorial
 =========================
 
 A GPU is required for this tutorial: the batch size is 2048 and the encoder
-trains for 500 epochs, which is impractical on CPU-only setups.  Apple Silicon (TensorFlow Metal) or
+trains for 200 epochs, which is impractical on CPU-only setups. Apple Silicon (TensorFlow Metal) or
 CUDA-enabled NVIDIA GPUs both work.
 This tutorial shows how DLVPM can be used to construct a meaninful represenation of a single data type. 
 More information on this can be found in the publication detailing this method.
@@ -135,7 +135,7 @@ pipelines that emit ``([view_one, view_two],)`` batches for training and validat
        return ds.map(map_batch, num_parallel_calls=AUTOTUNE).prefetch(AUTOTUNE)
 
    train_ds = make_siamese_views_dataset(
-       x_tr, batch_size=BATCH_SIZE, shuffle=True, training=True
+       x_tr, batch_size=BATCH_SIZE, shuffle=False, training=True
    )
    val_ds = make_siamese_views_dataset(
        x_val, batch_size=BATCH_SIZE, shuffle=False, training=True
@@ -144,15 +144,15 @@ pipelines that emit ``([view_one, view_two],)`` batches for training and validat
 4. Define the shared encoder and StructuralModel
 --------------------------------------------------------
 
-The Siamese branches share a single convolutional encoder (three Conv-BN/Dense blocks) that expands
-to a 4096-dimensional latent space.  The same model instance is supplied twice in ``model_list`` so
-weights stay tied.  A two-node adjacency matrix links the branches, and ``orthogonalization="zca"``
-orthogonalises deep latent variables constructed by the projection head.
+The Siamese branches share a single convolutional encoder (three Conv blocks followed by Dense/BN)
+that expands to a 2048-dimensional latent space. The same model instance is supplied twice in
+``model_list`` so weights stay tied. A two-node adjacency matrix links the branches, and
+``orthogonalization="zca"`` configures the orthogonalisation used by the projection head.
 
 .. code-block:: python
 
-   WEIGHT_DECAY = 0.0
-   NDIMS = 4096
+   WEIGHT_DECAY = 0
+   NDIMS = 2048
    CIFAR_image_model = keras.Sequential(
        [
            keras.Input(shape=INPUT_SHAPE),
@@ -165,12 +165,9 @@ orthogonalises deep latent variables constructed by the projection head.
            layers.Conv2D(256, 3, padding="same", activation="relu",
                          kernel_regularizer=keras.regularizers.l2(WEIGHT_DECAY)),
            layers.GlobalAveragePooling2D(),
-           layers.Dense(512),
+           layers.Dense(512, activation="relu"),
            layers.BatchNormalization(),
-           layers.Dense(NDIMS),
-           layers.BatchNormalization(),
-           layers.ReLU(),
-           layers.Dense(NDIMS),
+           layers.Dense(NDIMS, activation="relu"),
            layers.BatchNormalization(),
        ],
        name="cifar_image_model",
@@ -178,7 +175,7 @@ orthogonalises deep latent variables constructed by the projection head.
 
    model_list = [CIFAR_image_model, CIFAR_image_model]
    adjacency = tf.constant([[0, 1], [1, 0]], dtype="float32")
-   regularizers = [None, None]
+   regularizers = [keras.regularizers.l2(WEIGHT_DECAY), keras.regularizers.l2(WEIGHT_DECAY)]
 
    dlvpm_model = StructuralModel(
        adjacency,
@@ -207,7 +204,7 @@ metrics introduced for StructuralModel—``total_loss``, ``cross_metric``, ``mse
 
 .. code-block:: python
 
-   EPOCHS = 500
+   EPOCHS = 200
    dlvpm_model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, verbose=True)
 
 6. Remove projection layers before evaluation
@@ -235,7 +232,7 @@ Self-supervised Siamese methods typically discard the projection head before dow
        )
 
    # Strip the projection head before exporting embeddings.
-   image_model = remove_last_layers(dlvpm_model.model_list[0], n=7)
+   image_model = remove_last_layers(dlvpm_model.model_list[0], n=4)
 
 7. Export embeddings and run a linear probe
 --------------------------------------------------
@@ -248,6 +245,12 @@ full classification report, and confusion matrix act as the final evaluation.
 
    train_dlvs = image_model.predict(x_train, batch_size=32, verbose=1)
    test_dlvs = image_model.predict(x_test, batch_size=32, verbose=1)
+
+   # Optional: evaluate siamese loss metrics on held-out pairs
+   test_ds = make_siamese_views_dataset(
+       x_test, batch_size=BATCH_SIZE, shuffle=False, training=True
+   )
+   dlvpm_model.evaluate(test_ds)
 
    print(f"Train DLVs shape: {train_dlvs.shape}")
    print(f"Test  DLVs shape: {test_dlvs.shape}")

@@ -127,15 +127,9 @@ class ZCALayer(keras.layers.Layer):
         if training:
             self.update_moving_variables(X)       
             out = ops.matmul(X, self.project)
-        else:
-           
+        else:    
             out = ops.matmul(X, self.project)
-            # out_dtype = ops.dtype(out)
-            # scale_fact = ops.cast(self.tot_num, out_dtype) / ops.cast(ops.shape(out)[0], out_dtype)
-            # sqrt_inv_y = self.inv_sqrt_via_cholesky(
-            # self.moving_conv2 + self.decaying_diagonal(self.run, self.moving_conv2.shape[0])
-            # )
-            # out = ops.matmul(out, sqrt_inv_y)
+       
 
         return out
 
@@ -163,15 +157,25 @@ class ZCALayer(keras.layers.Layer):
         #     prevents a collapse to a trivial solution. The inputs here are DLVs for this data view. 
         #     """
  
-        y = inputs[0]
-        scale_fact = inputs[1]
+        y, scale_fact, train_DLV = inputs
+
 
         denom = ops.sqrt(scale_fact * ops.sum(ops.square(y), axis=0))
         self.project.assign(self.project / denom)
 
-        sqrt_inv_y = self.inv_sqrt_via_cholesky(
-            self.moving_conv2 + self.decaying_diagonal(self.run, self.moving_conv2.shape[0])
-        )
+
+        if train_DLV == False: # if train_DLV is False, we use moving averages
+
+            sqrt_inv_y = self.inv_sqrt_via_cholesky(
+                self.moving_conv2 + self.diag_offset*ops.eye(self.moving_conv2.shape[0], self.moving_conv2.shape[0], dtype=self.compute_dtype)   
+            )
+
+        else: # if train_DLV is True (default), we use batch level statistics
+
+            sqrt_inv_y = self.inv_sqrt_via_cholesky(
+                scale_fact*ops.matmul(ops.transpose(y), y) + self.diag_offset*ops.eye(self.moving_conv2.shape[0], self.moving_conv2.shape[0], dtype=self.compute_dtype)   
+            )
+
         out_y = ops.matmul(ops.squeeze(y), sqrt_inv_y)
         
         return out_y
@@ -181,33 +185,33 @@ class ZCALayer(keras.layers.Layer):
     def update_moving_variables(self, X):
 
         scale_fact = ops.cast(self.tot_num, self.compute_dtype) / ops.cast(ops.shape(X)[0], self.compute_dtype)
-        DLVs = ops.matmul(X, self.project)
+        y = ops.matmul(X, self.project)
 
         momentum = ops.convert_to_tensor(self.momentum, dtype=self.compute_dtype)
         one = ops.convert_to_tensor(1.0, dtype=self.compute_dtype)
 
         self.moving_conv2.assign(
             momentum * self.moving_conv2
-            + scale_fact * (one - momentum) * ops.matmul(ops.transpose(DLVs), DLVs)
+            + scale_fact * (one - momentum) * ops.matmul(ops.transpose(y), y)
         )
 
         self.run.assign(self.run + ops.cast(1.0, self.compute_dtype))
 
 
-    def decaying_diagonal(self, step, dim, final_eps=1e-4, decay_rate=0.1):
+    # def decaying_diagonal(self, step, dim, final_eps=1e-4, decay_rate=0.1):
 
-        """
-         Returns a (dim x dim) identity matrix scaled by an epsilon value that decays 
-         exponentially over 'step'.
+    #     """
+    #      Returns a (dim x dim) identity matrix scaled by an epsilon value that decays 
+    #      exponentially over 'step'.
 
-        """
-        step = ops.cast(step, "float32") - ops.cast(1.0, "float32")
+    #     """
+    #     step = ops.cast(step, "float32") - ops.cast(1.0, "float32")
 
-        initial_eps = ops.convert_to_tensor(self.diag_offset, dtype="float32")
-        final_eps = ops.convert_to_tensor(final_eps, dtype="float32")
-        current_eps = final_eps + (initial_eps - final_eps) * ops.exp(-decay_rate * step)
+    #     initial_eps = ops.convert_to_tensor(self.diag_offset, dtype="float32")
+    #     final_eps = ops.convert_to_tensor(final_eps, dtype="float32")
+    #     current_eps = final_eps + (initial_eps - final_eps) * ops.exp(-decay_rate * step)
 
-        return ops.cast(current_eps, self.compute_dtype) * ops.eye(dim, dim, dtype=self.compute_dtype)     
+    #     return ops.cast(current_eps, self.compute_dtype) * ops.eye(dim, dim, dtype=self.compute_dtype)     
 
         
     def get_config(self):

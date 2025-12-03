@@ -208,3 +208,24 @@ test_DLVs = DLVPM_Structural_instance.predict(X_arr_test) ## Here, we obtain the
 print(np.corrcoef(test_DLVs[:,0,:].T))
 ## Associations between the second set of DLVs are:
 print(np.corrcoef(test_DLVs[:,1,:].T))
+
+corr_mat = DLVPM_Structural_instance.calculate_corrmat(test_DLVs) # This outputs correlation matrices between different data types included in the model
+
+from deep_lvpm.plot import plot_correlation_chord_row
+
+# We can then plot the results in a chord diagram
+
+data_names = ["Histology", "RNASeq", "miRNASeq", "Methylation", "SNVs"]
+
+fig, ax = plot_correlation_chord_row(
+    corr_mat,
+    data_names,
+    min_corr=0,
+    node_cmap_name="Pastel1",
+    figure_title = "Correlation Plots Between Omics and Imaging Data Types in Lung Cancer",
+    show_edge_labels=True,
+    dpi=300,
+    show=True  # don't pop up a window
+    )
+
+

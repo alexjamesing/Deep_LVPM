@@ -274,7 +274,50 @@ via ``predict``.
     print(np.corrcoef(test_DLVs[:,1,:].T))
 
 
-7. Save the PyTorch-backed StructuralModel
+7. Visualise cross‑modal correlations
+-------------------------------------
+
+DLVPM can summarise cross‑modal relationships per latent factor as chord diagrams. For each DLV,
+we compute a correlation matrix across modalities and render one panel. Nodes are the data types;
+edge thickness and opacity scale with |r|; edges below ``min_corr`` are hidden. Optionally, label
+edges with their correlation values.
+
+.. code-block:: python
+
+    # One correlation matrix per latent factor (DLV1, DLV2, ...)
+    corr_mat = DLVPM_Structural_instance.calculate_corrmat(test_DLVs)
+
+    from deep_lvpm.plot import plot_correlation_chord_row
+
+    data_names = ["Histology", "RNASeq", "miRNASeq", "Methylation", "SNVs"]
+
+    fig, ax = plot_correlation_chord_row(
+        corr_mat,
+        data_names,
+        min_corr=0.0,
+        node_cmap_name="Pastel1",
+        figure_title=(
+            "Correlation Plots Between Omics and Imaging Data Types in Lung Cancer"
+        ),
+        show_edge_labels=True,
+        dpi=300,
+        show=True,
+    )
+
+Increase ``min_corr`` (e.g. ``0.2``) to focus on the strongest links.
+
+
+.. figure:: /_static/tutorial_figure.png
+   :alt: Row of chord diagrams showing cross‑modal correlations for each DLV.
+   :width: 100%
+   :align: center
+
+   Example output from ``plot_correlation_chord_row``. Each panel corresponds to a latent
+   factor (DLV). Nodes are modalities; edge thickness/opacity encode |r| between modalities
+   for that DLV. Labels can be toggled with ``show_edge_labels``.
+
+
+8. Save the PyTorch-backed StructuralModel
 ------------------------------------------
 
 Persist the trained StructuralModel using the ``.keras`` format (which preserves both TensorFlow and
