@@ -32,7 +32,7 @@ The gif above shows a plot of model training in progress on a three factor DLVPM
 - NVIDIA GPU: `torch-gpu` *(empty extra; preinstall CUDA wheels from pytorch.org first)*
 
 
-**Python:** 
+### Python
 - Python `>= 3.11` 
 ---
 
