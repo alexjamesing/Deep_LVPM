@@ -32,8 +32,7 @@ The gif above shows a plot of model training in progress on a three factor DLVPM
 - NVIDIA GPU: `torch-gpu` *(empty extra; preinstall CUDA wheels from pytorch.org first)*
 
 
-**Python:** `>= 3.9` (TensorFlow 2.16 works well on 3.10–3.12).
-
+**Python:** `>= 3.11` 
 ---
 
 ## Conda (recommended)
@@ -41,7 +40,7 @@ The gif above shows a plot of model training in progress on a three factor DLVPM
 Create and activate an environment:
 
 ```bash
-conda create -n dlvpm-k3 python=3.12 -y
+conda create -n dlvpm-k3 python=3.11 -y
 conda activate dlvpm-k3
 ```
 
