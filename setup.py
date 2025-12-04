@@ -16,11 +16,11 @@ setuptools.setup(
     extras_require={
         # ---------------- TensorFlow ----------------
         "tf-cpu": [
-            "tensorflow==2.20.0",
+            "tensorflow==2.16.2",
         ],
         # Linux-only; bundles CUDA/cuDNN runtime wheels
         "tf-gpu": [
-            'tensorflow[and-cuda]==2.20.0; platform_system=="Linux"',
+            'tensorflow[and-cuda]==2.16.2; platform_system=="Linux"',
         ],
         # Apple Silicon (macOS arm64) via Metal
         "tf-apple": [
