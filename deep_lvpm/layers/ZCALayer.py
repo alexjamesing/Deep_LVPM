@@ -16,6 +16,23 @@ from keras import saving
 from keras import ops
 
 
+@keras.utils.register_keras_serializable(package="deep_lvpm", name="SoftThreshold")
+class SoftThreshold(keras.constraints.Constraint):
+    """
+    Applies the Soft Thresholding operator (Proximal operator for L1 norm).
+    This forces weights with magnitude < threshold to become exactly zero.
+    """
+    def __init__(self, threshold=0.01):
+        self.threshold = threshold
+
+    def __call__(self, w):
+        # Using keras.ops for backend-agnostic operations
+        return ops.sign(w) * ops.maximum(ops.abs(w) - self.threshold, 0.0)
+
+    def get_config(self):
+        return {'threshold': self.threshold}
+
+
 @keras.utils.register_keras_serializable(package="deep_lvpm",name="ZCALayer")
 class ZCALayer(keras.layers.Layer):
     
@@ -63,56 +80,50 @@ class ZCALayer(keras.layers.Layer):
     """
     
     
-    def __init__(self, kernel_regularizer=keras.regularizers.l1_l2(l1=0, l2=0), epsilon=1e-3, momentum=0.95, diag_offset=1e-3, tot_num=None, ndims=None, **kwargs):
+    def __init__(self, 
+                 kernel_regularizer=keras.regularizers.l1_l2(l1=0, l2=0), 
+                 epsilon=1e-3, 
+                 momentum=0.95, 
+                 diag_offset=1e-3, 
+                 tot_num=None, 
+                 ndims=None, 
+                 sparsity_threshold=0.000001,  
+                 **kwargs):
         
-        """
-        Initialize the custom layer.
-
-        Parameters:
-        kernel_regularizer: Regularizer function for the kernel weights (default: L1L2 regularizer).
-        epsilon: Small float added to variance to avoid dividing by zero in batch normalization.
-        momentum: Momentum for the moving average in batch normalization.
-        diag_offset: Small float added to the diagonal of covariance matrix to ensure it's invertible.
-        tot_num: Total number of samples in the full dataset.
-        ndims: Total number of factors to extract.
-        run: Variable tracking the number of runs.
-        """
-
         super().__init__(**kwargs)
 
-        self.kernel_regularizer = kernel_regularizer ## This kernel regularizer variable determines the degree of regularization that projection weight vectors are subject to
-        self.momentum = momentum ## This is the amount of momentum that covariance matrices are subject to (see pseudo-code for more details)
-        self.epsilon = epsilon ## This is the offset determined during batch normalisation
-        self.diag_offset =diag_offset ## This is a offset added to the diagonal of the covariance matrix between DLVs, to ensure that this matrix is invertable
-         # # Additional custom parameters
-        self.tot_num = tot_num #kwargs.get("tot_num") ## This is the total number of samples in the full dataset
-        self.ndims = ndims #kwargs.get("ndims") ## This is the total number of factors we wish to extract
-        
+        self.kernel_regularizer = kernel_regularizer 
+        self.momentum = momentum 
+        self.epsilon = epsilon 
+        self.diag_offset = diag_offset 
+        self.tot_num = tot_num 
+        self.ndims = ndims 
+        self.sparsity_threshold = sparsity_threshold # Store the threshold
+
 
     def build(self, input_shape):
-
-        """ In this function, the model builds and assigns values to the weights used in the DLVPM analysis.
-        The function builds the list of projection vectors used to map associations between different data-views. 
-        The function also builds the moving mean and moving standard deviation used to normalise the input data.
-        """
-    
+        
         self.batch_norm1 = keras.layers.BatchNormalization(momentum=self.momentum, epsilon=self.epsilon)
         self.run = self.add_weight(shape=(), initializer="zeros", trainable=False, name="zcalayer_run")
+
+        # Determine if we should apply the proximal constraint
+        proj_constraint = None
+        if self.sparsity_threshold > 0.0:
+            proj_constraint = SoftThreshold(self.sparsity_threshold)
 
         self.project = self.add_weight(
             name="projection_weight_",
             shape=[input_shape[1], self.ndims],
             initializer=keras.initializers.RandomNormal(mean=0.0, stddev=1.0),
             regularizer=self.kernel_regularizer,
+            constraint=proj_constraint,  # <--- Apply constraint here
             trainable=True,
         )
 
         self.moving_conv2 = self.add_weight(
             name="moving_conv2", shape=[self.ndims, self.ndims], initializer="zeros", trainable=False
         )
-        # was: tf.eye(...)
         self.moving_conv2.assign(ops.eye(self.ndims, self.ndims, dtype=self.compute_dtype))
-
 
     def call(self, inputs, training=None):
 
@@ -255,12 +266,6 @@ class ZCALayer(keras.layers.Layer):
 
         
     def get_config(self):
-        """
-        Returns the configuration of the custom layer for saving and loading.
-
-        Returns:
-        config (dict): A Python dictionary containing the layer configuration.
-        """
         config = super().get_config().copy()
         config.update({
             'kernel_regularizer': keras.regularizers.serialize(self.kernel_regularizer),
@@ -269,6 +274,7 @@ class ZCALayer(keras.layers.Layer):
             'diag_offset': self.diag_offset,
             'tot_num': self.tot_num,
             'ndims': self.ndims,
+            'sparsity_threshold': self.sparsity_threshold, # Save to config
         })
         return config
 

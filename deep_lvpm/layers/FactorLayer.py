@@ -15,6 +15,23 @@ import keras
 from keras import saving
 from keras import ops
 
+@keras.utils.register_keras_serializable(package="deep_lvpm", name="SoftThreshold")
+class SoftThreshold(keras.constraints.Constraint):
+    """
+    Applies the Soft Thresholding operator (Proximal operator for L1 norm).
+    This forces weights with magnitude < threshold to become exactly zero.
+    """
+    def __init__(self, threshold=0.01):
+        self.threshold = threshold
+
+    def __call__(self, w):
+        # Using keras.ops for backend-agnostic operations
+        return ops.sign(w) * ops.maximum(ops.abs(w) - self.threshold, 0.0)
+
+    def get_config(self):
+        return {'threshold': self.threshold}
+
+
 
 @keras.utils.register_keras_serializable(package='deep_lvpm', name='FactorLayer')
 class FactorLayer(keras.layers.Layer):
@@ -48,7 +65,7 @@ class FactorLayer(keras.layers.Layer):
     """
     
     
-    def __init__(self, kernel_regularizer=None, epsilon=1e-3, momentum=0.99, tot_num=None, ndims=None, **kwargs):
+    def __init__(self, kernel_regularizer=None, epsilon=1e-3, momentum=0.99, tot_num=None, ndims=None, sparsity_threshold=0.00005, **kwargs):
         
         
         """
@@ -72,6 +89,7 @@ class FactorLayer(keras.layers.Layer):
         # # Additional custom parameters
         self.tot_num = tot_num #kwargs.get("tot_num") ## This is the total number of samples in the full dataset
         self.ndims = ndims #kwargs.get("ndims") ## This is the total number of factors we wish to extract
+        self.sparsity_threshold=sparsity_threshold  
       
        
     def build(self, input_shape):
@@ -92,10 +110,16 @@ class FactorLayer(keras.layers.Layer):
 
         self.linear_layer_list = [] ## A list of projection layers
         self.linear_layer_static = [] ## A list containing projection layer weights which are assigned as non-trainable
+
+        # Determine if we should apply the proximal constraint
+        proj_constraint = None
+        if self.sparsity_threshold > 0.0:
+            proj_constraint = SoftThreshold(self.sparsity_threshold)
+
         
         ## This loop creates n=tot_num projection layers, which are used to construct DLVPM factors 
         for i in range(self.ndims):
-            linear_layer = self.add_weight(name = 'projection_weight_' + str(i), shape = [input_shape[1],1], initializer=keras.initializers.RandomNormal(mean=0., stddev=1.), regularizer=self.kernel_regularizer, trainable=True)
+            linear_layer = self.add_weight(name = 'projection_weight_' + str(i), shape = [input_shape[1],1], initializer=keras.initializers.RandomNormal(mean=0., stddev=1.), regularizer=self.kernel_regularizer, constraint=proj_constraint, trainable=True)
             self.linear_layer_list.append(linear_layer)
         
         ## This loop creates n=tot_num static projection layers, which are non-trainable and used in orthogonalisation processes  
@@ -265,6 +289,7 @@ class FactorLayer(keras.layers.Layer):
             'epsilon': self.epsilon,
             'tot_num': self.tot_num,
             'ndims': self.ndims,
+            'sparsity_threshold': self.sparsity_threshold
             }
         
         return {**base_config, **config}
