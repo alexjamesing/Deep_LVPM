@@ -155,6 +155,7 @@ CIFAR_image_model = keras.Sequential(
     name="cifar_image_model",
 )
 
+
 # Build siamese structural model with shared encoder replicas.
 model_list = [CIFAR_image_model, CIFAR_image_model]
 adjacency = tf.constant([[0, 1], [1, 0]], dtype="float32")

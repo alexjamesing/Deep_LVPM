@@ -148,6 +148,46 @@ class ZCALayer(keras.layers.Layer):
         V_scaled = eigvecs * ops.expand_dims(inv_sqrt_vals, axis=0)
 
         return ops.matmul(V_scaled, ops.transpose(eigvecs))
+    
+
+    def modified_gram_schmidt(self, y, eps=1e-8, normalize=True):
+        """
+        y: Keras tensor with shape (..., D, K) or (..., K, D).
+        This implementation assumes columns are the last axis: (..., D, K),
+        i.e. K vectors of length D stacked as columns.
+
+        Returns:
+        y_ortho with same shape as y:
+            col0 unchanged (optionally normalized),
+            colj orthogonalized w.r.t. cols 0..j-1.
+        """
+        y = ops.convert_to_tensor(y)
+        orig_shape = ops.shape(y)
+
+        # Ensure shape is (..., D, K). If you store vectors as rows, transpose first.
+        # y = ops.transpose(y, axes=[..., 1, 0])  # if needed
+
+        D = orig_shape[-2]
+        K = orig_shape[-1]
+
+        # Collect orthogonalized columns
+        cols = []
+        for j in range(K):
+            v = y[..., :, j]  # (..., D)
+
+            if j > 0:
+                # Subtract projections onto previous q's
+                for q in cols:
+                    # projection coeff: <q,v> / <q,q>
+                    num = ops.sum(q * v, axis=-1, keepdims=True)              # (..., 1)
+                    den = ops.sum(q * q, axis=-1, keepdims=True) + eps        # (..., 1)
+                    v = v - (num / den) * q
+
+            cols.append(v)
+
+        # Stack back into (..., D, K)
+        y_ortho = ops.stack(cols, axis=-1)
+        return y_ortho
 
 
    
@@ -162,7 +202,7 @@ class ZCALayer(keras.layers.Layer):
 
         denom = ops.sqrt(scale_fact * ops.sum(ops.square(y), axis=0))
         self.project.assign(self.project / denom)
-
+        y = y / denom
 
         if train_DLV == False: # if train_DLV is False, we use moving averages
 
