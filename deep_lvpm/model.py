@@ -73,7 +73,7 @@ class StructuralModel(keras.Model):
     """
 
     
-    def __init__(self, Path, model_list, regularizer_list, tot_num, ndims, orthogonalization='Moore-Penrose', momentum=0.95, epsilon=1e-4, train_DLV=True, run_from_config=False, is_siamese=False, diag_offset=1e-3, **kwargs):
+    def __init__(self, Path, model_list, regularizer_list, tot_num, ndims, orthogonalization='Moore-Penrose', momentum=0.95, epsilon=1e-4, train_DLV=True, run_from_config=False, is_siamese=False, diag_offset=1e-3, sparse_l1_list=0.0, **kwargs):
         
         """
         Initializes the StructuralModel instance.
@@ -103,14 +103,33 @@ class StructuralModel(keras.Model):
         self.train_DLV = train_DLV
         self.is_siamese = is_siamese
         self.diag_offset = diag_offset
+        # Normalise sparse_l1_list to a per-view float list
+        # Accept scalar (broadcast) or list-like length == n_views
+        n_views = len(model_list)
+        if sparse_l1_list is None:
+            norm_sparse = [0.0] * n_views
+        elif isinstance(sparse_l1_list, (list, tuple, np.ndarray)):
+            norm_sparse = [float(x) for x in list(sparse_l1_list)]
+            if len(norm_sparse) != n_views:
+                raise ValueError(f"sparse_l1_list must have length {n_views}, got {len(norm_sparse)}")
+        else:
+            norm_sparse = [float(sparse_l1_list)] * n_views
+
+        if self.is_siamese and any(abs(x - norm_sparse[0]) > 0.0 for x in norm_sparse):
+            raise ValueError("In siamese mode, all entries of sparse_l1_list must be identical.")
+
+        self.sparse_l1_list = norm_sparse
 
         if not run_from_config:
         # Add factor layer to each model in the list
             if self.is_siamese == True:
-                new_model = self.add_DLVPM_layer(model_list[0], regularizer_list[0])
+                new_model = self.add_DLVPM_layer(model_list[0], regularizer_list[0], self.sparse_l1_list[0])
                 self.model_list = [new_model] * len(model_list)   # duplicates the *reference*
             else:
-                self.model_list = [self.add_DLVPM_layer(model, regularizer) for model, regularizer in zip(model_list, regularizer_list)]
+                self.model_list = [
+                    self.add_DLVPM_layer(model, regularizer, sparse_l1)
+                    for model, regularizer, sparse_l1 in zip(model_list, regularizer_list, self.sparse_l1_list)
+                ]
         else:
             self.model_list = model_list
 
@@ -121,7 +140,7 @@ class StructuralModel(keras.Model):
 
 
     
-    def add_DLVPM_layer(self, model, regularizer):
+    def add_DLVPM_layer(self, model, regularizer, sparse_l1):
         """
         Adds a FactorLayer on top of the given model.
 
@@ -133,17 +152,17 @@ class StructuralModel(keras.Model):
         """
         if isinstance(model, keras.Sequential):
             if self.orthogonalization == 'Moore-Penrose':
-                model.add(FactorLayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon))
+                model.add(FactorLayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon, sparse_l1=sparse_l1))
             elif self.orthogonalization == 'zca':
-                model.add(ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon, diag_offset = self.diag_offset))
+                model.add(ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon, diag_offset = self.diag_offset, sparse_l1=sparse_l1))
             else:
                 print('Orthogonalization mode not recognised, must be "Moore-Penrose" or "zca"')
         elif isinstance(model, keras.Model):
             if self.orthogonalization == 'Moore-Penrose':
-                x = FactorLayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon)(model.output)
+                x = FactorLayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon, sparse_l1=sparse_l1)(model.output)
                 model = keras.Model(inputs=model.input, outputs=x)
             elif self.orthogonalization == 'zca':
-                x = ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon, diag_offset = self.diag_offset)(model.output)
+                x = ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon, diag_offset = self.diag_offset, sparse_l1=sparse_l1)(model.output)
                 model = keras.Model(inputs=model.input, outputs=x)
             else:
                 print('Orthogonalization mode not recognised, must be "Moore-Penrose" or "zca"')
@@ -632,7 +651,8 @@ class StructuralModel(keras.Model):
             "regularizer_list": regularized_model_list,
             "tot_num": self.tot_num,
             "ndims": self.ndims,  
-            "orthogonalization": self.orthogonalization
+            "orthogonalization": self.orthogonalization,
+            "sparse_l1_list": self.sparse_l1_list,
         }
     
         return {**base_config, **config}

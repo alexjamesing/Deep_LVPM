@@ -22,6 +22,7 @@ The constructor has the following signature:
        train_DLV=True,
        is_siamese=False,
        diag_offset=1e-3,
+       sparse_l1_list=0.0,
        **kwargs
    )
 
@@ -38,6 +39,7 @@ where:
 * **train_DLV** (*bool, optional*): If ``True`` (default) the shared latent variables are constructed in training mode using batch parameters in the projection layer (rather than running parameters)
 * **is_siamese** (*bool, optional*): Indicates whether the model is being used in a Siamese configuration where all views share weights (default: ``False``).
 * **diag_offset** (*float, optional*): Additional diagonal jitter applied when using ZCA orthogonalisation to keep covariance matrices well-conditioned.
+* **sparse_l1_list** (*float or list, optional*): Amount of L1 soft-thresholding applied to the final projection weights of each measurement model.  May be a scalar (broadcast to all views) or a list of length equal to ``len(model_list)`` for per-view control. Defaults to ``0.0`` (no sparsity). In Siamese mode, values must be identical across views.
 * **kwargs**: Forwarded to ``keras.Model`` (e.g., ``name`` or ``dtype``).
 
 
@@ -143,6 +145,8 @@ model for a few epochs, evaluates, and finally inspects the learned latent varia
        orthogonalization="Moore-Penrose",  # stay with the default FactorLayer
        momentum=0.95,
        epsilon=1e-4,
+       # Optional: per-view genuine sparsity via soft-thresholding
+       # sparse_l1_list=[0.0, 5e-6],  # example: different sparsity per view
    )
 
    # Compile with one optimizer per measurement model.
@@ -165,5 +169,17 @@ model for a few epochs, evaluates, and finally inspects the learned latent varia
    print("Evaluation metrics:", metrics)
 
    # Predict gives the latent tensor with shape (samples, ndims, n_views).
-   dlvs = struct_model.predict([view_a, view_b], verbose=False)
-   print("Latent tensor shape:", dlvs.shape)
+    dlvs = struct_model.predict([view_a, view_b], verbose=False)
+    print("Latent tensor shape:", dlvs.shape)
+
+
+Genuine sparsity via soft-thresholding
+--------------------------------------
+
+Setting ``sparse_l1_list`` enables a proximal soft-thresholding constraint on the projection weights appended by :class:`StructuralModel` (``FactorLayer`` for ``"Moore-Penrose"`` orthogonalisation or ``ZCALayer`` for ``"zca"``).  Unlike conventional L1 penalties used with gradient descent—which bias weights toward zero but rarely make them exactly zero—the soft-thresholding operator applies the L1 proximal mapping to the weights after each update.  This produces exact zeros below the chosen threshold, yielding interpretable and truly sparse projections.
+
+Notes:
+
+* ``sparse_l1_list=0.0`` (default) leaves behaviour unchanged (no thresholding).
+* Provide a scalar to apply the same sparsity to all views, or a list for per-view control.
+* In Siamese configurations, all values must be identical because the projection head is shared.

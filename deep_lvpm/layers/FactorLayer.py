@@ -65,7 +65,8 @@ class FactorLayer(keras.layers.Layer):
     """
     
     
-    def __init__(self, kernel_regularizer=None, epsilon=1e-3, momentum=0.99, tot_num=None, ndims=None, sparsity_threshold=0.00005, **kwargs):
+    def __init__(self, kernel_regularizer=None, epsilon=1e-3, momentum=0.99, tot_num=None, ndims=None, 
+                 sparse_l1=0.0, **kwargs):
         
         
         """
@@ -78,6 +79,7 @@ class FactorLayer(keras.layers.Layer):
             tot_num (int, optional): Total number of samples used for training. Used for optimal scaling of covariance matrices.
             ndims (int, optional): Number of DLVPM factor dimensions to extract.
             run (int, optional): Initial value for the run tracker. Defaults to 0.
+            sparse_l1 (float, optional): Soft-thresholding level applied to projection weights. ``0.0`` disables sparsity (default). Values ``> 0`` induce genuine sparsity via the L1 proximal operator, yielding exact zeros below the threshold.
             **kwargs: Additional keyword arguments inherited from keras.layers.Layer.
         """
         
@@ -89,7 +91,7 @@ class FactorLayer(keras.layers.Layer):
         # # Additional custom parameters
         self.tot_num = tot_num #kwargs.get("tot_num") ## This is the total number of samples in the full dataset
         self.ndims = ndims #kwargs.get("ndims") ## This is the total number of factors we wish to extract
-        self.sparsity_threshold=sparsity_threshold  
+        self.sparse_l1 = float(sparse_l1)
       
        
     def build(self, input_shape):
@@ -113,8 +115,8 @@ class FactorLayer(keras.layers.Layer):
 
         # Determine if we should apply the proximal constraint
         proj_constraint = None
-        if self.sparsity_threshold > 0.0:
-            proj_constraint = SoftThreshold(self.sparsity_threshold)
+        if self.sparse_l1 > 0.0:
+            proj_constraint = SoftThreshold(self.sparse_l1)
 
         
         ## This loop creates n=tot_num projection layers, which are used to construct DLVPM factors 
@@ -289,16 +291,14 @@ class FactorLayer(keras.layers.Layer):
             'epsilon': self.epsilon,
             'tot_num': self.tot_num,
             'ndims': self.ndims,
-            'sparsity_threshold': self.sparsity_threshold
+            'sparse_l1': self.sparse_l1
             }
         
         return {**base_config, **config}
     
     @classmethod
     def from_config(cls, config):
-        
         config['kernel_regularizer'] = keras.regularizers.deserialize(config['kernel_regularizer'])
-
         return cls(**config)
     
     def build_from_config(self,config):

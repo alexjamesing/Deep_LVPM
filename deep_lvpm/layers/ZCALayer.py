@@ -87,7 +87,7 @@ class ZCALayer(keras.layers.Layer):
                  diag_offset=1e-3, 
                  tot_num=None, 
                  ndims=None, 
-                 sparsity_threshold=0.000001,  
+                 sparse_l1=0.0,
                  **kwargs):
         
         super().__init__(**kwargs)
@@ -98,7 +98,7 @@ class ZCALayer(keras.layers.Layer):
         self.diag_offset = diag_offset 
         self.tot_num = tot_num 
         self.ndims = ndims 
-        self.sparsity_threshold = sparsity_threshold # Store the threshold
+        self.sparse_l1 = float(sparse_l1)
 
 
     def build(self, input_shape):
@@ -108,8 +108,8 @@ class ZCALayer(keras.layers.Layer):
 
         # Determine if we should apply the proximal constraint
         proj_constraint = None
-        if self.sparsity_threshold > 0.0:
-            proj_constraint = SoftThreshold(self.sparsity_threshold)
+        if self.sparse_l1 > 0.0:
+            proj_constraint = SoftThreshold(self.sparse_l1)
 
         self.project = self.add_weight(
             name="projection_weight_",
@@ -274,7 +274,7 @@ class ZCALayer(keras.layers.Layer):
             'diag_offset': self.diag_offset,
             'tot_num': self.tot_num,
             'ndims': self.ndims,
-            'sparsity_threshold': self.sparsity_threshold, # Save to config
+            'sparse_l1': self.sparse_l1,
         })
         return config
 
