@@ -7,6 +7,9 @@ Deep Latent Variable Path Modelling (DLVPM) is a method for path/structural equa
 
 Backend-agnostic with Keras 3: DLVPM is implemented on Keras 3 and runs backend-agnostically on either TensorFlow or PyTorch; select your preferred backend by installing the corresponding extra (e.g., tf-cpu, tf-gpu, tf-apple, torch-cpu, torch-apple, or preinstall CUDA PyTorch for torch-gpu) and, if needed, set KERAS_BACKEND=tensorflow or KERAS_BACKEND=torch. The high-level Keras API (model.fit, model.evaluate, etc.) is unchanged across backends.
 
+Optional tutorial extras:
+- `tutorial-coco` installs the additional dependency required for the MS COCO image-text tutorial (`fiftyone`).
+
 If you find this project valuable, please consider giving it a star on GitHub.  Your support helps others discover the project and motivates continued development!
 
 ![Chord animation](chord_animation.gif)
@@ -113,13 +116,16 @@ export KERAS_BACKEND=tensorflow   # or: torch
 - `tf-gpu` is **Linux-only** and uses `tensorflow[and-cuda]` (no separate CUDA toolkit install required).
 - `torch-gpu` extra is intentionally empty to avoid pulling CPU wheels from PyPI; always install CUDA-enabled PyTorch first.
 - If multiple backends are installed, Keras will pick one; use `KERAS_BACKEND` to force your choice.
+- To run the MS COCO tutorial, install with the COCO tutorial extra, for example:
+  `pip install "git+https://github.com/alexjamesing/Deep_LVPM.git@keras3#egg=deep-lvpm[tf-cpu,tutorial-coco]"`
 
 ## Tutorials & Metrics
 
-Three turnkey tutorials ship with the toolbox and default to the TensorFlow backend. Launch them with:
+Four turnkey tutorials ship with the toolbox and default to the TensorFlow backend. Launch them with:
 
 - `python -m deep_lvpm.tutorial.tutorial_mnist_tf` – associate MNIST images with labels and visualise the latent space.
 - `python -m deep_lvpm.tutorial.tutorial_tcga_tf` – integrate five TCGA lung cancer modalities using residual encoders.
 - `python -m deep_lvpm.tutorial.tutorial_siamese_tf` – train a Siamese encoder on CIFAR-10 and probe the embeddings linearly.
+- `python -m deep_lvpm.tutorial.tutorial_coco_tf` – train an image-text model on MS COCO with EfficientNetB0 + Transformer and benchmark true five-caption retrieval for DLVPM/CLIP/VICReg.
 
 All tutorials report the expanded `StructuralModel.evaluate` metrics (`total_loss`, `cross_metric`, `mse_loss`, and `redundancy`) introduced in this release so you can monitor both cross-view alignment and within-view redundancy.

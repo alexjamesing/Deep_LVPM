@@ -138,8 +138,9 @@ class ZCALayer(keras.layers.Layer):
         if training:
             self.update_moving_variables(X)       
             out = ops.matmul(X, self.project)
-        else:    
+        else:  
             out = ops.matmul(X, self.project)
+            # out = ops.matmul(out, self.inv_sqrt_via_cholesky(self.moving_conv2))
        
 
         return out
@@ -161,46 +162,6 @@ class ZCALayer(keras.layers.Layer):
         return ops.matmul(V_scaled, ops.transpose(eigvecs))
     
 
-    def modified_gram_schmidt(self, y, eps=1e-8, normalize=True):
-        """
-        y: Keras tensor with shape (..., D, K) or (..., K, D).
-        This implementation assumes columns are the last axis: (..., D, K),
-        i.e. K vectors of length D stacked as columns.
-
-        Returns:
-        y_ortho with same shape as y:
-            col0 unchanged (optionally normalized),
-            colj orthogonalized w.r.t. cols 0..j-1.
-        """
-        y = ops.convert_to_tensor(y)
-        orig_shape = ops.shape(y)
-
-        # Ensure shape is (..., D, K). If you store vectors as rows, transpose first.
-        # y = ops.transpose(y, axes=[..., 1, 0])  # if needed
-
-        D = orig_shape[-2]
-        K = orig_shape[-1]
-
-        # Collect orthogonalized columns
-        cols = []
-        for j in range(K):
-            v = y[..., :, j]  # (..., D)
-
-            if j > 0:
-                # Subtract projections onto previous q's
-                for q in cols:
-                    # projection coeff: <q,v> / <q,q>
-                    num = ops.sum(q * v, axis=-1, keepdims=True)              # (..., 1)
-                    den = ops.sum(q * q, axis=-1, keepdims=True) + eps        # (..., 1)
-                    v = v - (num / den) * q
-
-            cols.append(v)
-
-        # Stack back into (..., D, K)
-        y_ortho = ops.stack(cols, axis=-1)
-        return y_ortho
-
-
    
     def weight_normalizer(self, inputs):
 
@@ -211,7 +172,8 @@ class ZCALayer(keras.layers.Layer):
         y, scale_fact, train_DLV = inputs
 
 
-        denom = ops.sqrt(scale_fact * ops.sum(ops.square(y), axis=0))
+        eps = ops.convert_to_tensor(self.epsilon, dtype=ops.dtype(y))
+        denom = ops.sqrt(scale_fact * ops.sum(ops.square(y), axis=0) + eps)
         self.project.assign(self.project / denom)
         y = y / denom
 
@@ -227,8 +189,9 @@ class ZCALayer(keras.layers.Layer):
                 scale_fact*ops.matmul(ops.transpose(y), y) + self.diag_offset*ops.eye(self.moving_conv2.shape[0], self.moving_conv2.shape[0], dtype=self.compute_dtype)   
             )
 
-        out_y = ops.matmul(ops.squeeze(y), sqrt_inv_y)
         
+        out_y = ops.matmul(ops.squeeze(y), sqrt_inv_y)
+
         return out_y
 
 
@@ -247,22 +210,6 @@ class ZCALayer(keras.layers.Layer):
         )
 
         self.run.assign(self.run + ops.cast(1.0, self.compute_dtype))
-
-
-    # def decaying_diagonal(self, step, dim, final_eps=1e-4, decay_rate=0.1):
-
-    #     """
-    #      Returns a (dim x dim) identity matrix scaled by an epsilon value that decays 
-    #      exponentially over 'step'.
-
-    #     """
-    #     step = ops.cast(step, "float32") - ops.cast(1.0, "float32")
-
-    #     initial_eps = ops.convert_to_tensor(self.diag_offset, dtype="float32")
-    #     final_eps = ops.convert_to_tensor(final_eps, dtype="float32")
-    #     current_eps = final_eps + (initial_eps - final_eps) * ops.exp(-decay_rate * step)
-
-    #     return ops.cast(current_eps, self.compute_dtype) * ops.eye(dim, dim, dtype=self.compute_dtype)     
 
         
     def get_config(self):

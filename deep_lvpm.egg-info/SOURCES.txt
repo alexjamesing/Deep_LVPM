@@ -2,7 +2,9 @@ README.md
 setup.py
 deep_lvpm/__init__.py
 deep_lvpm/model.py
+deep_lvpm/multi_model.py
 deep_lvpm/plot.py
+deep_lvpm/tuner.py
 deep_lvpm.egg-info/PKG-INFO
 deep_lvpm.egg-info/SOURCES.txt
 deep_lvpm.egg-info/dependency_links.txt
@@ -17,7 +19,12 @@ deep_lvpm/layers/ZCALayer.py
 deep_lvpm/layers/__init__.py
 deep_lvpm/tutorial/__init__.py
 deep_lvpm/tutorial/tcga_quickstart.py
+deep_lvpm/tutorial/tutorial_coco_tf.py
 deep_lvpm/tutorial/tutorial_mnist_tf.py
+deep_lvpm/tutorial/tutorial_siamese_clip_tf.py
 deep_lvpm/tutorial/tutorial_siamese_tf.py
+deep_lvpm/tutorial/tutorial_siamese_vicreg_tf.py
+deep_lvpm/tutorial/tutorial_tcga_clip_tf.py
 deep_lvpm/tutorial/tutorial_tcga_tf.py
 deep_lvpm/tutorial/tutorial_tcga_torch.py
+deep_lvpm/tutorial/tutorial_tcga_vicreg_tf.py

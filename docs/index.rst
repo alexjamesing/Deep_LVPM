@@ -13,7 +13,9 @@ If you find Deep LVPM useful, please consider giving the project a `star <https:
    introduction
    installation
    reference/structural_model
+   reference/tuner
    tutorials/tcga
    tutorials/tcga_torch
    tutorials/mnist
    tutorials/siamese
+   tutorials/coco

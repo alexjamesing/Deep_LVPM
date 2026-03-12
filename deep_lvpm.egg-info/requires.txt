@@ -1,7 +1,9 @@
 keras==3.10.0
+keras_tuner>=1.4.7
 pydot==4.0.1
 scikit-learn==1.6.1
 matplotlib==3.9.4
+tensorflow-datasets==4.9.4
 
 [tf-apple]
 

@@ -5,9 +5,11 @@ Summary: Deep Latent Variable Path Modelling (Keras 3, multi-backend)
 Author: Alex James Ing
 Requires-Python: >=3.10,<3.12
 Requires-Dist: keras==3.10.0
+Requires-Dist: keras_tuner>=1.4.7
 Requires-Dist: pydot==4.0.1
 Requires-Dist: scikit-learn==1.6.1
 Requires-Dist: matplotlib==3.9.4
+Requires-Dist: tensorflow-datasets==4.9.4
 Provides-Extra: tf-cpu
 Requires-Dist: tensorflow==2.16.2; extra == "tf-cpu"
 Provides-Extra: tf-gpu
