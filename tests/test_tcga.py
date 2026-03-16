@@ -1,24 +1,20 @@
 """
 Abbreviated TCGA tutorial used by the pytest suite.
 
-The function ``run_tcga_quickstart`` trains the structural model for 50 epochs
-on the packaged lung cancer sample and returns the evaluation metrics recorded
-on the held-out test split.  The helper keeps the footprint small enough to run
-inside unit tests while still enforcing minimum quality thresholds.
+``run_tcga_quickstart`` trains the structural model for 50 epochs on the
+packaged lung cancer sample and returns evaluation metrics recorded on
+the held-out test split.  The helper keeps the footprint small enough to
+run inside unit tests while still enforcing minimum quality thresholds.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Sequence
 
-os.environ.setdefault("KERAS_BACKEND", "torch")
-
 import numpy as np
-
-import keras
-from keras import layers, regularizers
+import torch
+import torch.nn as nn
 
 from deep_lvpm.model import StructuralModel
 
@@ -29,7 +25,6 @@ TEST_FILE = "Lung_multiomics_sample_test.npz"
 
 def _evaluate_structural_model(model: StructuralModel, data) -> dict[str, float]:
     """Return eval metrics as plain floats regardless of backend return type."""
-
     results = model.evaluate(data, verbose=False)
     if isinstance(results, dict):
         return {key: float(value) for key, value in results.items()}
@@ -40,7 +35,6 @@ def _evaluate_structural_model(model: StructuralModel, data) -> dict[str, float]
 
 def _load_npz_arrays(filename: str) -> dict[str, np.ndarray]:
     """Load NPZ contents into memory so temp files can be discarded safely."""
-
     candidate = Path(__file__).resolve().parents[1] / "data" / filename
     if candidate.exists():
         with np.load(candidate) as arrays:
@@ -48,7 +42,7 @@ def _load_npz_arrays(filename: str) -> dict[str, np.ndarray]:
 
     try:
         from importlib import resources
-    except ImportError as exc:  # pragma: no cover - python <3.9 fallback
+    except ImportError as exc:
         raise FileNotFoundError(f"Unable to locate {filename}") from exc
 
     with resources.as_file(resources.files("deep_lvpm.data") / filename) as handle:
@@ -56,38 +50,28 @@ def _load_npz_arrays(filename: str) -> dict[str, np.ndarray]:
             return {key: arrays[key].astype("float32") for key in arrays.files}
 
 
-def _build_measurement_models(view_shapes: Sequence[np.ndarray]) -> list[keras.Model]:
-    """Create lightweight residual-free encoders for each modality."""
+def _build_encoder(input_dim: int, name: str) -> nn.Sequential:
+    """Lightweight two-layer encoder for one data modality."""
+    hidden = min(512, max(64, input_dim // 8))
+    projection = max(32, hidden // 2)
+    model = nn.Sequential(
+        nn.Linear(input_dim, hidden),
+        nn.GELU(),
+        nn.BatchNorm1d(hidden),
+        nn.Dropout(0.2),
+        nn.Linear(hidden, projection),
+        nn.GELU(),
+        nn.BatchNorm1d(projection),
+        nn.Dropout(0.2),
+    )
+    model.n_inputs = 1
+    return model
 
-    encoders: list[keras.Model] = []
-    for view, name in zip(view_shapes, DATA_KEYS):
-        input_dim = view.shape[1]
-        hidden = min(512, max(64, input_dim // 8))
-        projection = max(32, hidden // 2)
-        encoder = keras.Sequential(
-            [
-                layers.InputLayer(shape=(input_dim,), name=f"{name}_in"),
-                layers.Dense(
-                    hidden,
-                    activation="gelu",
-                    kernel_regularizer=regularizers.l2(5e-4),
-                    name=f"{name}_dense1",
-                ),
-                layers.BatchNormalization(name=f"{name}_bn1"),
-                layers.Dropout(0.2, name=f"{name}_drop1"),
-                layers.Dense(
-                    projection,
-                    activation="gelu",
-                    kernel_regularizer=regularizers.l2(5e-4),
-                    name=f"{name}_dense2",
-                ),
-                layers.BatchNormalization(name=f"{name}_bn2"),
-                layers.Dropout(0.2, name=f"{name}_drop2"),
-            ],
-            name=f"{name}_encoder",
-        )
-        encoders.append(encoder)
-    return encoders
+
+def _build_measurement_models(view_arrays: Sequence[np.ndarray]) -> list[nn.Sequential]:
+    return [
+        _build_encoder(arr.shape[1], name) for arr, name in zip(view_arrays, DATA_KEYS)
+    ]
 
 
 def run_tcga_quickstart(
@@ -98,17 +82,17 @@ def run_tcga_quickstart(
     """
     Train the abbreviated TCGA tutorial and return cross-validation metrics.
 
-    The model always trains for ``epochs`` iterations (default 50) so CI jobs can
-    detect regressions that affect convergence speed or output quality.  Results
+    Trains for ``epochs`` iterations (default 50) so CI jobs can detect
+    regressions affecting convergence speed or output quality.  Results
     are evaluated on the packaged test split and returned as plain floats.
     """
-
     train_arrays = _load_npz_arrays(TRAIN_FILE)
     test_arrays = _load_npz_arrays(TEST_FILE)
     train_views = [train_arrays[key] for key in DATA_KEYS]
     test_views = [test_arrays[key] for key in DATA_KEYS]
 
     encoders = _build_measurement_models(train_views)
+
     adjacency = np.array(
         [
             [0, 1, 0, 0, 0],
@@ -119,7 +103,8 @@ def run_tcga_quickstart(
         ],
         dtype="float32",
     )
-    regularizer_list = [regularizers.L1L2(l1=3e-4, l2=3e-4) for _ in encoders]
+
+    regularizer_list = [(3e-4, 3e-4)] * len(encoders)
 
     structural_model = StructuralModel(
         Path=adjacency,
@@ -133,13 +118,16 @@ def run_tcga_quickstart(
         train_DLV=True,
     )
 
-    optimizers = [keras.optimizers.Adam(learning_rate=5e-4) for _ in encoders]
+    structural_model.build(train_views)
+    optimizers = [
+        torch.optim.Adam(m.parameters(), lr=5e-4) for m in structural_model.model_list
+    ]
     structural_model.compile(optimizer=optimizers)
     structural_model.fit(
         train_views,
         batch_size=batch_size,
         epochs=epochs,
-        verbose=1 if verbose else 0,
+        verbose=verbose,
     )
 
     metrics = _evaluate_structural_model(structural_model, test_views)

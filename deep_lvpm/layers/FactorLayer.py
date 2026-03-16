@@ -1,282 +1,260 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Tue Jun  8 16:56:45 2021
+FactorLayer — pure PyTorch implementation.
 
-@author: ing
+Appended to each measurement model in StructuralModel. Applies batch
+normalization then Moore-Penrose orthogonalisation to produce `ndims`
+orthogonal Deep Latent Variables (DLVs). Maintains moving statistics
+for test-time inference.
 """
 
-def warn(*args, **kwargs):
-    pass
-import warnings
-warnings.warn = warn
-
-import keras
-from keras import saving
-from keras import ops
+import torch
+import torch.nn as nn
 
 
-@keras.utils.register_keras_serializable(package='deep_lvpm', name='FactorLayer')
-class FactorLayer(keras.layers.Layer):
-    
-    """This layer should be placed at the end of DLVPM models. The layer 
-    generates orthogonal factors that are highly correlated between data-views. 
-    
-    This layer is constructed of three basic parts. The first set of operations
-    involve carrying out batch normalisation on the inputs. In the second set of 
-    operations, we orthogonalise inputs with respect to the first DLV.
-    We then use a linear layer to project the output of the neural network into a 
-    space where it correlates with the outputs of other data-views.
-
-    Similar to some other layers, such as the batch normalisation layer, this
-    layer performs differently during training and testing.
-    
-    Attributes:
-        kernel_regularizer (keras.regularizers.Regularizer or None): Regularizer function applied to the projection layer's kernel weights.
-        epsilon (float): Small constant added to variance to avoid dividing by zero in the batch normalization step. Defaults to 1e-6.
-        momentum (float): Momentum for the moving average and moving variance in the batch normalization step. Defaults to 0.95.
-        tot_num (int or None): Total number of samples used for training. This is used for optimal scaling of covariance matrices.
-        ndims (int or None): Number of DLVs to extract.
-        run (tf.Variable): Tracks the number of runs to initialize moving variables on the first call.
-    
-    
-    Call arguments:
-    inputs: A single tensor, which is used for the purposes of projecting to 
-    other data-views, identifying factors that are highly correlated between 
-    data-views. 
-    
+class FactorLayer(nn.Module):
     """
-    
-    
-    def __init__(self, kernel_regularizer=None, epsilon=1e-3, momentum=0.99, tot_num=None, ndims=None, **kwargs):
-        
-        
-        """
-        Initializes the FactorLayer.
+    Produces orthogonal DLVs via sequential linear projection +
+    Gram-Schmidt orthogonalisation using both trainable and static
+    (non-gradient) projection weight vectors.
 
-        Args:
-            kernel_regularizer (keras.regularizers.Regularizer, optional): Regularizer function applied to the projection layer's kernel weights.
-            epsilon (float, optional): Small constant added to variance to avoid dividing by zero in the batch normalization step. Defaults to 1e-6.
-            momentum (float, optional): Momentum for the moving average and moving variance in the batch normalization step. Defaults to 0.95.
-            tot_num (int, optional): Total number of samples used for training. Used for optimal scaling of covariance matrices.
-            ndims (int, optional): Number of DLVPM factor dimensions to extract.
-            run (int, optional): Initial value for the run tracker. Defaults to 0.
-            **kwargs: Additional keyword arguments inherited from keras.layers.Layer.
-        """
-        
-        super().__init__(**kwargs)
+    Attributes
+    ----------
+    kernel_regularizer : tuple (l1, l2) or None
+        L1/L2 penalty applied to the trainable projection weights.
+    epsilon : float
+        Numerical stability offset for normalisation steps.
+    momentum : float  (Keras convention: close to 1 = slow update)
+        EMA momentum for moving statistics.  The underlying
+        ``nn.BatchNorm1d`` receives ``1 - momentum`` so that both use
+        the same convention.
+    tot_num : int
+        Total training-set size; used to scale covariance estimates.
+    ndims : int
+        Number of DLVs to extract.
+    """
 
-        self.kernel_regularizer = kernel_regularizer ## This kernel regularizer variable determines the degree of regularization that projection weight vectors are subject to
-        self.epsilon = epsilon ## This is the offset determined during batch normalisation
-        self.momentum = momentum ## This is the amount of momentum that covariance matrices are subject to (see pseudo-code for more details)
-        # # Additional custom parameters
-        self.tot_num = tot_num #kwargs.get("tot_num") ## This is the total number of samples in the full dataset
-        self.ndims = ndims #kwargs.get("ndims") ## This is the total number of factors we wish to extract
-      
-       
-    def build(self, input_shape):
-        
-        """
-        Creates the weights of the layer.
+    def __init__(
+        self,
+        kernel_regularizer=None,
+        epsilon: float = 1e-3,
+        momentum: float = 0.99,
+        tot_num: int = None,
+        ndims: int = None,
+    ):
+        super().__init__()
+        self.kernel_regularizer = kernel_regularizer
+        self.epsilon = epsilon
+        self.momentum = momentum
+        self.tot_num = tot_num
+        self.ndims = ndims
+        self._built = False
 
-        This function initializes the list of projection vectors, moving mean, moving standard deviation,
-        and other variables required for the orthogonalization and normalization processes.
+    # ------------------------------------------------------------------
+    # Lazy build — called on first forward() or explicitly
+    # ------------------------------------------------------------------
 
-        Args:
-            input_shape (tuple): Shape of the input tensor.
-        """
+    def build(self, input_dim: int):
+        """Initialise all weights for the given feature dimension."""
+        if self._built:
+            return
 
-        self.batch_norm1 = keras.layers.BatchNormalization(name='batch_norm1_factorlayer', momentum=self.momentum, epsilon=self.epsilon)
-
-        self.run= self.add_weight(name = 'factorlayer_run', shape = (), initializer = 'zeros',trainable=False) ## This variable tracks the number of runs
-
-        self.linear_layer_list = [] ## A list of projection layers
-        self.linear_layer_static = [] ## A list containing projection layer weights which are assigned as non-trainable
-        
-        ## This loop creates n=tot_num projection layers, which are used to construct DLVPM factors 
-        for i in range(self.ndims):
-            linear_layer = self.add_weight(name = 'projection_weight_' + str(i), shape = [input_shape[1],1], initializer=keras.initializers.RandomNormal(mean=0., stddev=1.), regularizer=self.kernel_regularizer, trainable=True)
-            self.linear_layer_list.append(linear_layer)
-        
-        ## This loop creates n=tot_num static projection layers, which are non-trainable and used in orthogonalisation processes  
-        for i in range(self.ndims):
-            static_layer = self.add_weight(name = 'static_projection_weight_' + str(i), shape = [input_shape[1],1], initializer=keras.initializers.RandomNormal(mean=0., stddev=1.), trainable=False)
-            self.linear_layer_static.append(static_layer)
-        
-        self.DLV_mean = self.add_weight(name = 'DLV_moving_mean', shape = [self.ndims,1], initializer='zeros', trainable=False) 
-        self.DLV_var = self.add_weight(name = 'DLV_moving_std', shape = [self.ndims,1], initializer='ones', trainable=False) 
-        
-        self.moving_convX = self.add_weight(name = 'moving_convX', shape=[self.ndims, input_shape[1]], initializer='zeros', trainable=False)
-        #self.i=tf.Variable(0,trainable=False)
-
-        super(FactorLayer, self).build(input_shape) ## ensures that the layer registers as built
-        #self.run=tf.Variable(0,trainable=False)
-
-
-    def call(self, inputs, training=False):
-        """
-        Forward pass of the FactorLayer.
-
-        This function applies the projection, batch normalization, orthogonalization, and correlation enhancement steps.
-        """
-        from keras import ops
-
-        X = self.batch_norm1(inputs, training=training)
-
-        if training:
-            DLV_all = self.calculate_batch_DLV_static(X)
-            out = self.calculate_batch_DLV_train(X, DLV_all)
-            self.update_moving_variables([X, DLV_all])
-        else:
-            out = self.calculate_DLV_test(X)
-
-        return out
-
-
-    def weight_normalizer(self, inputs):
-        """Re-normalize projection weight vectors; return normalized DLVs."""
-
-        y, scale_fact, train_DLV = inputs
-
-        for i in range(self.ndims):
-            yi = y[:, i]
-            denom = ops.sqrt(scale_fact * ops.sum(ops.square(yi)))
-            self.linear_layer_list[i].assign(self.linear_layer_list[i] / denom)
-            self.linear_layer_static[i].assign(self.linear_layer_list[i] / denom)
-
-        y_denom = ops.sqrt(scale_fact * ops.sum(ops.square(y), axis=0))
-        out_y = y / y_denom
-        return out_y
-
-    def update_moving_variables(self, inputs):
-
-        """Update moving variables using batch-level statistics."""
-
-        X, DLV_all = inputs
-        batch_size = ops.cast(ops.shape(X)[0], self.compute_dtype)
-        scale_fact = ops.cast(self.tot_num, self.compute_dtype) / batch_size
-
-        # momentum = 0 on first call, else self.momentum
-        first = ops.cast(ops.equal(self.run, ops.zeros_like(self.run)), self.compute_dtype)
-        momentum = (1.0 - first) * ops.convert_to_tensor(self.momentum, dtype=self.compute_dtype)
-
-        batch_DLV_mean = ops.expand_dims(ops.mean(DLV_all, axis=0), axis=1)   # (ndims,1)
-        batch_DLV_var  = ops.expand_dims(ops.var(DLV_all, axis=0),  axis=1)   # (ndims,1)
-
-        one = ops.convert_to_tensor(1.0, dtype=self.compute_dtype)
-
-        self.DLV_mean.assign(momentum * self.DLV_mean + (one - momentum) * batch_DLV_mean)
-        self.DLV_var.assign(momentum * self.DLV_var + (one - momentum) * batch_DLV_var)
-
-        batch_DLV_norm = (DLV_all - ops.transpose(batch_DLV_mean)) / (ops.transpose(ops.sqrt(batch_DLV_var)) + self.epsilon)
-
-        self.moving_convX.assign(
-            momentum * self.moving_convX
-            + scale_fact * (one - momentum) * ops.matmul(ops.transpose(batch_DLV_norm), X)
+        # BatchNorm: PyTorch momentum = 1 - Keras momentum
+        self.batch_norm1 = nn.BatchNorm1d(
+            input_dim,
+            momentum=1.0 - self.momentum,
+            eps=self.epsilon,
         )
 
-        # # keep static copies in sync
-        # for i in range(self.ndims):
-        #     self.linear_layer_static[i].assign(self.linear_layer_list[i])
+        # Trainable projection vectors (one per DLV)
+        self.linear_layer_list = nn.ParameterList(
+            [nn.Parameter(torch.randn(input_dim, 1)) for _ in range(self.ndims)]
+        )
 
-        self.run.assign(ops.cast(1.0, self.compute_dtype))
-
-
-    def orthogonalisation_train(self, inputs):
-        """Orthogonalize X w.r.t. previous DLVs using batch stats."""
-
-        X, DLV_prev = inputs
-        DLV_batch = (DLV_prev - ops.mean(DLV_prev, axis=0)) / (ops.std(DLV_prev, axis=0) + self.epsilon)
-
-        denom = ops.cast(ops.shape(X)[0], self.compute_dtype)
-        beta = ops.matmul(ops.transpose(DLV_batch), X) / denom
-        ortho_output = X - ops.matmul(DLV_batch, beta)
-        return ortho_output
-
-
-    def orthogonalisation_test(self, inputs):
-        """Orthogonalize X w.r.t. previous DLVs using moving variables."""
-        from keras import ops
-
-        X, DLV_prev = inputs
-        i = DLV_prev.shape[1]
-
-        DLV_norm = (DLV_prev - ops.transpose(self.DLV_mean[:i, :])) / (ops.transpose(ops.sqrt(self.DLV_var)[:i, :]) + self.epsilon)
-
-        denom = self.tot_num
-        beta = self.moving_convX[:i, :] / denom
-        ortho_output = X - ops.matmul(DLV_norm, beta)
-        return ortho_output
-    
-
-    def calculate_batch_DLV_static(self, X):
-        """Compute batch DLVs with STATIC (non-trainable) projection vectors."""
-
+        # Non-trainable static copies used for orthogonalisation
         for i in range(self.ndims):
-            if i == 0:
-                DLV = ops.matmul(X, self.linear_layer_static[i])
-                DLV_all = DLV
-            else:
-                ortho_output = self.orthogonalisation_train([X, DLV_all])
-                DLV = ops.matmul(ortho_output, self.linear_layer_static[i])
-                DLV_all = ops.concatenate([DLV_all, DLV], axis=1)
-        return DLV_all
-    
+            self.register_buffer(f"static_{i}", torch.randn(input_dim, 1))
 
+        # Moving statistics
+        self.register_buffer("DLV_mean", torch.zeros(self.ndims, 1))
+        self.register_buffer("DLV_var", torch.ones(self.ndims, 1))
+        self.register_buffer("moving_convX", torch.zeros(self.ndims, input_dim))
+        self.register_buffer("run", torch.zeros(()))
 
-    def calculate_batch_DLV_train(self, X, DLV_all):
-        """Compute batch DLVs with TRAINABLE projection vectors."""
-        from keras import ops
+        self._built = True
 
-        for i in range(self.ndims):
-            if i == 0:
-                out = ops.matmul(X, self.linear_layer_list[i])
-            else:
-                ortho_output = self.orthogonalisation_train([X, DLV_all[:, :i]])
-                out_i = ops.matmul(ortho_output, self.linear_layer_list[i])
-                out = ops.concatenate([out, out_i], axis=1)
+    # ------------------------------------------------------------------
+    # Helpers: static buffer list access
+    # ------------------------------------------------------------------
+
+    def _static(self, i: int) -> torch.Tensor:
+        return getattr(self, f"static_{i}")
+
+    # ------------------------------------------------------------------
+    # Forward
+    # ------------------------------------------------------------------
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        if not self._built:
+            self.build(inputs.shape[1])
+            self.to(inputs.device)
+
+        X = self.batch_norm1(inputs)
+
+        if self.training:
+            DLV_all = self._calculate_batch_DLV_static(X)
+            out = self._calculate_batch_DLV_train(X, DLV_all)
+            with torch.no_grad():
+                self._update_moving_variables(X, DLV_all)
+        else:
+            out = self._calculate_DLV_test(X)
+
         return out
 
+    # ------------------------------------------------------------------
+    # Weight normaliser (called from StructuralModel, already no_grad)
+    # ------------------------------------------------------------------
 
-    
+    def weight_normalizer(
+        self,
+        y: torch.Tensor,
+        scale_fact: torch.Tensor,
+        train_DLV: bool,
+    ) -> torch.Tensor:
+        """Normalise projection weights; return normalised DLVs."""
+        with torch.no_grad():
+            for i in range(self.ndims):
+                yi = y[:, i]
+                denom = torch.sqrt(scale_fact * (yi ** 2).sum())
+                new_w = self.linear_layer_list[i] / denom
+                self.linear_layer_list[i].data.copy_(new_w)
+                self._static(i).copy_(new_w)
 
-    def calculate_DLV_test(self, X):
+            y_denom = torch.sqrt(scale_fact * (y ** 2).sum(dim=0))
+            out_y = y / y_denom
+        return out_y
+
+    # ------------------------------------------------------------------
+    # Moving variable update
+    # ------------------------------------------------------------------
+
+    def _update_moving_variables(
+        self, X: torch.Tensor, DLV_all: torch.Tensor
+    ) -> None:
+        batch_size = X.shape[0]
+        scale_fact = float(self.tot_num) / float(batch_size)
+
+        # Zero momentum on first call
+        is_first = self.run.item() == 0.0
+        m = 0.0 if is_first else self.momentum
+        one_m = 1.0 - m
+
+        batch_DLV_mean = DLV_all.mean(dim=0).unsqueeze(1)   # (ndims, 1)
+        batch_DLV_var = DLV_all.var(dim=0).unsqueeze(1)  # (ndims, 1)
+
+        self.DLV_mean.copy_(m * self.DLV_mean + one_m * batch_DLV_mean)
+        self.DLV_var.copy_(m * self.DLV_var + one_m * batch_DLV_var)
+
+        batch_DLV_norm = (
+            (DLV_all - batch_DLV_mean.T)
+            / (batch_DLV_var.sqrt().T + self.epsilon)
+        )
+
+        self.moving_convX.copy_(
+            m * self.moving_convX
+            + scale_fact * one_m * (batch_DLV_norm.T @ X)
+        )
+
+        self.run.fill_(1.0)
+
+    # ------------------------------------------------------------------
+    # Orthogonalisation helpers
+    # ------------------------------------------------------------------
+
+    def _orthogonalise_train(
+        self, X: torch.Tensor, DLV_prev: torch.Tensor
+    ) -> torch.Tensor:
+        """Orthogonalise X w.r.t. previous DLVs using batch statistics."""
+        DLV_batch = (DLV_prev - DLV_prev.mean(dim=0)) / (
+            DLV_prev.std(dim=0) + self.epsilon
+        )
+        denom = float(X.shape[0])
+        beta = (DLV_batch.T @ X) / denom
+        return X - DLV_batch @ beta
+
+    def _orthogonalise_test(
+        self, X: torch.Tensor, DLV_prev: torch.Tensor
+    ) -> torch.Tensor:
+        """Orthogonalise X w.r.t. previous DLVs using moving statistics."""
+        i = DLV_prev.shape[1]
+        DLV_norm = (
+            DLV_prev - self.DLV_mean[:i, :].T
+        ) / (self.DLV_var[:i, :].sqrt().T + self.epsilon)
+        beta = self.moving_convX[:i, :] / float(self.tot_num)
+        return X - DLV_norm @ beta
+
+    # ------------------------------------------------------------------
+    # DLV calculation methods
+    # ------------------------------------------------------------------
+
+    def _calculate_batch_DLV_static(self, X: torch.Tensor) -> torch.Tensor:
+        """Compute DLVs with static (non-trainable) projection vectors."""
+        DLV_all = None
+        for i in range(self.ndims):
+            if i == 0:
+                DLV = X @ self._static(i)
+                DLV_all = DLV
+            else:
+                ortho = self._orthogonalise_train(X, DLV_all)
+                DLV = ortho @ self._static(i)
+                DLV_all = torch.cat([DLV_all, DLV], dim=1)
+        return DLV_all
+
+    def _calculate_batch_DLV_train(
+        self, X: torch.Tensor, DLV_all: torch.Tensor
+    ) -> torch.Tensor:
+        """Compute DLVs with trainable projection vectors."""
+        out = None
+        for i in range(self.ndims):
+            if i == 0:
+                out = X @ self.linear_layer_list[i]
+            else:
+                ortho = self._orthogonalise_train(X, DLV_all[:, :i])
+                out_i = ortho @ self.linear_layer_list[i]
+                out = torch.cat([out, out_i], dim=1)
+        return out
+
+    def _calculate_DLV_test(self, X: torch.Tensor) -> torch.Tensor:
         """Compute DLVs at test time using moving statistics."""
-        from keras import ops
-
+        out = None
         for i in range(self.ndims):
             w = self.linear_layer_list[i]
             if i == 0:
-                out = ops.matmul(X, w)
+                out = X @ w
             else:
-                ortho_output = self.orthogonalisation_test([X, out])
-                out_i = ops.matmul(ortho_output, w)
-                out = ops.concatenate([out, out_i], axis=1)
+                ortho = self._orthogonalise_test(X, out)
+                out_i = ortho @ w
+                out = torch.cat([out, out_i], dim=1)
         return out
-    
 
-    def get_config(self):
-        
-        base_config = super().get_config()
-        
-        config={
-            'kernel_regularizer':  keras.regularizers.serialize(self.kernel_regularizer),
-            'momentum': self.momentum,
-            'epsilon': self.epsilon,
-            'tot_num': self.tot_num,
-            'ndims': self.ndims,
-            }
-        
-        return {**base_config, **config}
-    
-    @classmethod
-    def from_config(cls, config):
-        
-        config['kernel_regularizer'] = keras.regularizers.deserialize(config['kernel_regularizer'])
+    # ------------------------------------------------------------------
+    # Regularisation loss
+    # ------------------------------------------------------------------
 
-        return cls(**config)
-    
-    def build_from_config(self,config):
-         self.build(config["input_shape"])
-        
-    
+    def regularization_loss(self) -> torch.Tensor:
+        """L1/L2 penalty on trainable projection weights, or zero."""
+        device = self.linear_layer_list[0].device
+        dtype = self.linear_layer_list[0].dtype
+        penalty = torch.zeros((), device=device, dtype=dtype)
+
+        if self.kernel_regularizer is None:
+            return penalty
+
+        l1, l2 = self.kernel_regularizer
+        for w in self.linear_layer_list:
+            if l1 > 0:
+                penalty = penalty + l1 * w.abs().sum()
+            if l2 > 0:
+                penalty = penalty + l2 * (w ** 2).sum()
+        return penalty

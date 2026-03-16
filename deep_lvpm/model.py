@@ -1,691 +1,702 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-This script creates a custom Keras model for identifying correlated factors
-(deep latent variables) between different data types. It is designed to work with different
-data-views, and it establishes associations between these views using deep latent
-variables. The data-views we wish to optimise associations between are defined using an 
-adjacency matrix.
+StructuralModel — pure PyTorch implementation.
+
+A custom nn.Module that wraps a collection of per-view encoder
+networks and coordinates joint training to find orthogonal Deep Latent
+Variables (DLVs) that capture shared structure across heterogeneous
+data modalities.
+
+The association structure between views is defined by a binary
+adjacency matrix (``Path``).
 """
 
-import os
+from __future__ import annotations
+
 import numpy as np
-import keras as keras
+import pydot
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+
 from deep_lvpm.layers.FactorLayer import FactorLayer
 from deep_lvpm.layers.ZCALayer import ZCALayer
-from deep_lvpm.layers.ConfoundLayer import ConfoundLayer
-import pydot
-from keras import ops
-
-be = keras.backend.backend()  # 'tensorflow' | 'torch' | 'jax' (we handle tf/torch)
-
-if be == "tensorflow":
-    try:
-        import tensorflow as tf  # lazy import
-    except ImportError as e:    
-        raise RuntimeError(
-            "Tensorflow backend requested but it is not installed. "
-            "Install Tensorflow or switch Keras backend to Torch."
-        ) from e
-
-elif be == "torch":
-    try:
-        import torch  # lazy import
-    except ImportError as e:
-        raise RuntimeError(
-            "Torch backend requested but it is not installed. "
-            "Install Torch or switch Keras backend to TensorFlow."
-        ) from e
 
 
-
-@keras.utils.register_keras_serializable(package="deep_lvpm",name="StructuralModel")
-class StructuralModel(keras.Model):
-    
+class StructuralModel(nn.Module):
     """
-    A custom Keras model to establish associations between different data-views.
+    Multi-view Deep Latent Variable Path Model.
 
-    This model implements a deep learning approach to find deep latent variables (DLVs)
-    that highlight the correlated factors between different types of data.
-    The associations between data-views are defined using a binary adjacency matrix,
-    where ones represent connections, and zeros represent un-connected data-views.
-
-    Attributes:
-        Path: A binary adjacency matrix defining the connections between data-views.
-        model_list: A list of Keras models for each data-view.
-        tot_num: Total number of features across all batches.
-        ndims: Number of orthogonal latent variables to construct.
-        epochs: Number of training epochs.
-        batch_size: Size of the batches used during training.
-        orthogonalization: Orthogonalisation procedure ('zca' or 'Moore-Penrose').
-        loss_tracker_total: Tracker for the total loss during training.
-        corr_tracker: Tracker for the correlation metric during training.
-        loss_tracker_mse: Tracker for the mean squared error loss during training.
-
-    Methods:
-        call: Runs data through each of the measurement sub-models.
-        train_step: Performs a training step, updating the model weights.
-        compile: Configures the model for training.
-        test_step: Evaluates the model on a batch of test data.
-        metrics: Returns the list of model's metrics.
-        mse_loss: Calculates mean squared error loss for a data-view.
-        corr_metric: Calculates the correlation metric for a data-view.
+    Parameters
+    ----------
+    Path : array-like, shape (n_views, n_views)
+        Binary adjacency matrix.  ``Path[i, j] == 1`` means view i and
+        view j are associated.
+    model_list : list of nn.Module
+        One encoder per data view.  Each will be wrapped with a
+        FactorLayer or ZCALayer automatically.
+    regularizer_list : list of tuple or None
+        Per-view regularisation as ``(l1, l2)`` tuples or ``None``.
+    tot_num : int
+        Total training-set size (used for covariance scaling).
+    ndims : int
+        Number of orthogonal DLVs to extract per view.
+    orthogonalization : str
+        ``'Moore-Penrose'`` (default) or ``'zca'``.
+    momentum : float
+        EMA momentum for moving statistics (Keras convention).
+    epsilon : float
+        Numerical stability constant.
+    train_DLV : bool
+        If True (default), DLV targets during training are computed
+        from the current batch.  If False, moving-average statistics
+        are used instead.
+    is_siamese : bool
+        If True, all views share the same encoder (weights tied).
+    diag_offset : float
+        Diagonal regularisation for ZCA covariance inversion.
+    device : str or None
+        ``'cpu'``, ``'cuda'``, etc.  Auto-detected when None.
     """
 
-    
-    def __init__(self, Path, model_list, regularizer_list, tot_num, ndims, orthogonalization='Moore-Penrose', momentum=0.95, epsilon=1e-4, train_DLV=True, run_from_config=False, is_siamese=False, diag_offset=1e-3, **kwargs):
-        
-        """
-        Initializes the StructuralModel instance.
+    def __init__(
+        self,
+        Path,
+        model_list: list,
+        regularizer_list: list,
+        tot_num: int,
+        ndims: int,
+        orthogonalization: str = "Moore-Penrose",
+        momentum: float = 0.95,
+        epsilon: float = 1e-4,
+        train_DLV: bool = True,
+        is_siamese: bool = False,
+        diag_offset: float = 1e-3,
+        device: str | None = None,
+    ):
+        super().__init__()
 
-        Args:
-            Path (tf.Tensor or np.array): A binary adjacency matrix defining connections between data-views.
-            regularizer_list (list): A list of regularizers that are applied to projection layers for models
-            in each data-view.
-            model_list (list): A list of Keras models for each data-view.
-            tot_num (int): Total number of features across all batches.
-            ndims (int): Number of orthogonal latent variables to construct.
-            orthogonalization (str, optional): Orthogonalisation procedure. Defaults to 'Moore-Penrose'.
-            momentum (Float, optional): The momentum defines how quickly global parameters such as means and correlation matrices are updated
-            epsilon (Float, optional): "epsilon" (often denoted as ε) is a small constant added for numerical stability in batch updates
-            train_DLV (True/False): "train_DLV" defines whether target DLVs are calcualted in training or testing modes during model training
-        """
-
-        super().__init__(**kwargs)    
-        
-        self.Path = Path
         self.tot_num = tot_num
         self.ndims = ndims
         self.momentum = momentum
         self.epsilon = epsilon
-        self.orthogonalization=orthogonalization
+        self.orthogonalization = orthogonalization
         self.regularizer_list = regularizer_list
         self.train_DLV = train_DLV
         self.is_siamese = is_siamese
         self.diag_offset = diag_offset
 
-        if not run_from_config:
-        # Add factor layer to each model in the list
-            if self.is_siamese == True:
-                new_model = self.add_DLVPM_layer(model_list[0], regularizer_list[0])
-                self.model_list = [new_model] * len(model_list)   # duplicates the *reference*
-            else:
-                self.model_list = [self.add_DLVPM_layer(model, regularizer) for model, regularizer in zip(model_list, regularizer_list)]
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = device
+
+        # Path stored as a buffer so it moves with the model
+        path_tensor = torch.tensor(np.asarray(Path), dtype=torch.float32)
+        self.register_buffer("Path", path_tensor)
+
+        # Build wrapped models
+        if is_siamese:
+            wrapped = self._add_dlvpm_layer(model_list[0], regularizer_list[0])
+            wrapped_list = [wrapped] * len(model_list)
+            # nn.ModuleList with the same object repeated: PyTorch registers
+            # the module once, but we need independent list entries for
+            # index access, so we store the unique module separately.
+            self._siamese_module = wrapped
+            self.model_list = nn.ModuleList(wrapped_list)
         else:
-            self.model_list = model_list
+            wrapped_list = [
+                self._add_dlvpm_layer(m, r)
+                for m, r in zip(model_list, regularizer_list)
+            ]
+            self.model_list = nn.ModuleList(wrapped_list)
 
-        self.loss_tracker_total = keras.metrics.Mean(name="total_loss")
-        self.corr_tracker = keras.metrics.Mean(name="cross_metric")
-        self.loss_tracker_mse = keras.metrics.Mean(name="mse_loss")
-        self.loss_tracker_redundancy = keras.metrics.Mean(name="redundancy")
+        self.optimizers: list | None = None
 
+    # ------------------------------------------------------------------
+    # Layer wrapping
+    # ------------------------------------------------------------------
 
-    
-    def add_DLVPM_layer(self, model, regularizer):
-        """
-        Adds a FactorLayer on top of the given model.
-
-        The method first checks whether the input model is sequential or functional,
-        and then adds the FactorLayer in an appropriate way.
-
-        :param model: A Keras/TensorFlow model (sequential or functional).
-        :return: The model with an added FactorLayer on top.
-        """
-        if isinstance(model, keras.Sequential):
-            if self.orthogonalization == 'Moore-Penrose':
-                model.add(FactorLayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon))
-            elif self.orthogonalization == 'zca':
-                model.add(ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon, diag_offset = self.diag_offset))
-            else:
-                print('Orthogonalization mode not recognised, must be "Moore-Penrose" or "zca"')
-        elif isinstance(model, keras.Model):
-            if self.orthogonalization == 'Moore-Penrose':
-                x = FactorLayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon)(model.output)
-                model = keras.Model(inputs=model.input, outputs=x)
-            elif self.orthogonalization == 'zca':
-                x = ZCALayer(kernel_regularizer=regularizer, tot_num=self.tot_num, ndims=self.ndims, momentum=self.momentum, epsilon=self.epsilon, diag_offset = self.diag_offset)(model.output)
-                model = keras.Model(inputs=model.input, outputs=x)
-            else:
-                print('Orthogonalization mode not recognised, must be "Moore-Penrose" or "zca"')
-        else:
-            raise ValueError("The input model must be either a keras.Sequential or a keras.Model instance.")
-
-        
-        return model
-    
-
-    def call(self, inputs, training=False):
-
-        """
-    #     Run data through each of the measurement sub-models.
-
-    #     Args:
-    #         inputs (list): A list of inputs for each data-view.
-    #         training: Whether to call the model in training or inference mode. Can take values of True or False.
-
-    #     Returns:
-    #         The output of the model after processing the inputs.
-    #     """
-
-
-        inputs_nested = self.organize_inputs_by_model(inputs)
-        out = ops.stack(
-            [self.model_list[vie](inputs_nested[vie], training=training)
-            for vie in range(len(self.model_list))],
-            axis=2
+    def _add_dlvpm_layer(self, model: nn.Module, regularizer) -> nn.Sequential:
+        """Append a FactorLayer or ZCALayer to the given encoder."""
+        if self.orthogonalization == "Moore-Penrose":
+            factor = FactorLayer(
+                kernel_regularizer=regularizer,
+                tot_num=self.tot_num,
+                ndims=self.ndims,
+                momentum=self.momentum,
+                epsilon=self.epsilon,
             )
-        return out
-
-
-    def organize_inputs_by_model(self, data_inputs):
-        organized_inputs = []
-        data_index = 0
-
-        for model in self.model_list:
-            
-            num_inputs = len(model.inputs) if hasattr(model, 'inputs') else 1
-
-            if num_inputs == 1:
-                # For a single input model, append the data directly.
-                organized_inputs.append(data_inputs[data_index])
-                data_index += 1
-            else:
-                # For models requiring multiple inputs, append a list of inputs.
-                inputs_for_model = data_inputs[data_index:data_index + num_inputs]
-                organized_inputs.append(inputs_for_model)
-                data_index += num_inputs
-
-        return organized_inputs
-
-
-    def _normalize_pred(self, y_pred, scale_fact):
-        eps = getattr(self, "epsilon", 1e-8)
-        eps = ops.convert_to_tensor(eps, dtype=ops.dtype(y_pred))
-        # y_pred / (sqrt(scale_fact) * ||y_pred||_2 over batch)
-        denom = ops.sqrt(scale_fact) * ops.sqrt(ops.sum(ops.square(y_pred), axis=0) + eps)
-        return y_pred / denom
-
-    def _step_tf(self, vie, inputs_v, y, scale_fact):
-        """This is the training step for the tensorflow backend"""
-
-        model = self.model_list[vie]
-        with tf.GradientTape() as tape:
-            y_pred = model(inputs_v, training=True)
-            y_pred = self._normalize_pred(y_pred, scale_fact)
-            mse_loss = self.mse_loss(y, y_pred, vie)
-            internal_loss = tf.add_n(model.losses) if model.losses else tf.cast(0.0, mse_loss.dtype)
-            loss = mse_loss + internal_loss
-
-        trainable_vars = model.trainable_variables
-        grads = tape.gradient(loss, trainable_vars)
-        model.optimizer.apply_gradients(zip(grads, trainable_vars))
-        corr = self.corr_metric(y, y_pred, vie)
-
-        return loss, mse_loss, corr
-
-    def _step_torch(self, vie, inputs_v, y, scale_fact):
-        """This is the training step for the Torch backend"""
-
-        model = self.model_list[vie]
-
-        # Forward pass (PyTorch autograd records ops by default)
-        y_pred = model(inputs_v, training=True)
-        y_pred = self._normalize_pred(y_pred, scale_fact)
-        mse_loss = self.mse_loss(y, y_pred, vie)
-
-        if model.losses:
-            internal_loss = torch.stack(
-                [
-                    l
-                    if torch.is_tensor(l)
-                    else torch.tensor(l, dtype=mse_loss.dtype, device=mse_loss.device)
-                    for l in model.losses
-                ]
-            ).sum()
+        elif self.orthogonalization == "zca":
+            factor = ZCALayer(
+                kernel_regularizer=regularizer,
+                tot_num=self.tot_num,
+                ndims=self.ndims,
+                momentum=self.momentum,
+                epsilon=self.epsilon,
+                diag_offset=self.diag_offset,
+            )
         else:
-            internal_loss = torch.zeros((), dtype=mse_loss.dtype, device=mse_loss.device)
-                              
-        loss = mse_loss + internal_loss
+            raise ValueError(
+                f"Unknown orthogonalization '{self.orthogonalization}'. "
+                "Must be 'Moore-Penrose' or 'zca'."
+            )
 
-        # Compute grads w.r.t. model variables and apply
-        trainable_vars = model.trainable_variables
-        # Some backends wrap the underlying torch tensor on .value; handle both.
-        vars_for_grad = [getattr(v, "value", v) for v in trainable_vars]
-        grads = torch.autograd.grad(
-            loss,
-            vars_for_grad,
-            retain_graph=False,
-            create_graph=False,
-            allow_unused=True,
-        )
-        # Replace None grads with zeros (can happen for detached vars / unused params)
-        fixed_grads = [
-            g if g is not None else torch.zeros_like(getattr(v, "value", v))
-            for g, v in zip(grads, trainable_vars)
-        ]
-        model.optimizer.apply_gradients(zip(fixed_grads, trainable_vars))
+        wrapped = nn.Sequential(model, factor)
+        # Carry forward the n_inputs attribute if present
+        wrapped.n_inputs = getattr(model, "n_inputs", 1)
+        return wrapped
 
-        corr = self.corr_metric(y, y_pred, vie)
-        return loss, mse_loss, corr
+    # ------------------------------------------------------------------
+    # Input organisation
+    # ------------------------------------------------------------------
 
-    def _weight_normaliser(self,inputs):
-        """This is an internal function designed to normalise weights
-        after each batch"""
-        
-         # Forward pass through all views to construct global DLVs
-        y = self(inputs, training=self.train_DLV)
-
-        # scale_fact = tot_num / batch_size
-        y_dtype = ops.dtype(y)
-        scale_fact = ops.cast(self.tot_num, y_dtype) / ops.cast(self._shape_fn(y)[0], y_dtype)
-
-        # per-view normalization via last layer's weight_normalizer
-        y_list = []
-        for vie in range(len(self.model_list)):
-            y_view = y[:, :, vie]
-            y_view = self.model_list[vie].layers[-1].weight_normalizer([y_view, scale_fact, self.train_DLV])
-            y_list.append(y_view)
-
-        y = ops.stack(y_list, axis=-1)
-
-        return y, scale_fact
-
-
-    def train_step(self, inputs):
-        """This is the main training set, it runs differently in tensorflow and torch"""
-
-
-
-        # Unpack (tf.data-like packs inputs in a tuple/list)
-        inputs = inputs[0]
-
-        be = keras.backend.backend()  # 'tensorflow' | 'torch' | 'jax' (we handle tf/torch)
-
-        if be == "tensorflow":
-            y, scale_fact = self._weight_normaliser(inputs)
-        elif be == "torch":
-            with torch.no_grad():
-                y, scale_fact = self._weight_normaliser(inputs)
-            
-
-        total_loss = [None] * len(self.model_list)
-        total_CC   = [None] * len(self.model_list)
-        total_mse  = [None] * len(self.model_list)
-        total_redundancy = [None] * len(self.model_list)
-
-        inputs_nested = self.organize_inputs_by_model(inputs)
-        
-        be = keras.backend.backend()  # 'tensorflow' | 'torch' | 'jax' (we handle tf/torch)
-
-        for vie in range(len(self.model_list)):
-            if be == "tensorflow":
-                loss, mse_loss, corr = self._step_tf(vie, inputs_nested[vie], y, scale_fact)
-            elif be == "torch":
-                loss, mse_loss, corr = self._step_torch(vie, inputs_nested[vie], y, scale_fact)
+    def organize_inputs_by_model(self, data_inputs: list) -> list:
+        """Distribute a flat input list to per-view sub-lists."""
+        organized = []
+        idx = 0
+        for model in self.model_list:
+            n = getattr(model, "n_inputs", 1)
+            if n == 1:
+                organized.append(data_inputs[idx])
+                idx += 1
             else:
-                raise NotImplementedError(f"Backend '{be}' not supported in custom train_step.")
+                organized.append(data_inputs[idx : idx + n])
+                idx += n
+        return organized
 
-            total_loss[vie] = ops.sum(loss)
-            total_CC[vie]   = corr
-            total_mse[vie]  = mse_loss
-            total_redundancy[vie] = self.calculate_redundancy(y[:,:,vie])
+    # ------------------------------------------------------------------
+    # Forward
+    # ------------------------------------------------------------------
 
-        self.loss_tracker_total.update_state(ops.stack(total_loss))
-        self.corr_tracker.update_state(ops.stack(total_CC))
-        self.loss_tracker_mse.update_state(ops.stack(total_mse))
-        self.loss_tracker_redundancy.update_state(ops.stack(total_redundancy))
+    def forward(self, inputs: list) -> torch.Tensor:
+        """Return stacked DLVs: (batch, ndims, n_views)."""
+        inputs_nested = self.organize_inputs_by_model(inputs)
+        outputs = []
+        for v in range(len(self.model_list)):
+            outputs.append(self.model_list[v](inputs_nested[v]))
+        return torch.stack(outputs, dim=2)
 
-        return {
-            "total_loss": self.loss_tracker_total.result(),
-            "cross_metric": self.corr_tracker.result(),
-            "mse_loss": self.loss_tracker_mse.result(),
-            "redundancy": self.loss_tracker_redundancy.result()
-        }
+    def build(self, X_list: list) -> None:
+        """
+        Trigger lazy initialisation of FactorLayer / ZCALayer weights.
 
+        Call this with a small sample of training data before creating
+        per-view optimizers, so that ``model.parameters()`` is non-empty.
+
+        Parameters
+        ----------
+        X_list : list of array-like
+            One array per input tensor (same format as passed to ``fit``).
+        """
+        tensors = [
+            torch.as_tensor(np.asarray(x)[:2], dtype=torch.float32).to(self.device)
+            for x in X_list
+        ]
+        self.to(self.device)
+        with torch.no_grad():
+            self.forward(tensors)
+
+    def set_train_mode(self) -> None:
+        """Set training mode for all sub-models."""
+        for model in self.model_list:
+            model.train()
+
+    def set_eval_mode(self) -> None:
+        """Set evaluation mode for all sub-models."""
+        for model in self.model_list:
+            model.eval()
+
+    # ------------------------------------------------------------------
+    # Compile
+    # ------------------------------------------------------------------
 
     def compile(self, optimizer):
-        """ Here, we overwrite the model compilation step. This is necessary as
-        normally, the model compilation step would normally take a loss. Using
-        this method, the loss is built into the method itself. We can either 
-        pass the optimizer a single optimizer object, or a list of objects, with a 
-        different optimizer used for each data-view.
         """
-        
-        super().compile()
-        
-        #self.global_build()
+        Store per-view optimizers.
 
+        Parameters
+        ----------
+        optimizer : torch.optim.Optimizer or list of torch.optim.Optimizer
+            When a single optimizer is given it is shared across all
+            views (intended for siamese networks).  When a list is
+            given each view gets its own optimizer.
+        """
         if isinstance(optimizer, list):
-            for vie in range(len(self.model_list)):
-                self.model_list[vie].compile(optimizer[vie])
-        elif isinstance(optimizer,keras.optimizers.Optimizer): ## This case is important when running a siamese network on one data-view
-            for vie in range(len(self.model_list)):
-                self.model_list[0].compile(optimizer)
+            self.optimizers = optimizer
+        elif isinstance(optimizer, torch.optim.Optimizer):
+            self.optimizers = [optimizer] * len(self.model_list)
         else:
-            print('Error: optimizer must either be of the keras.optimizer class, or a list of objects of this class')
-        
+            raise ValueError(
+                "optimizer must be a torch.optim.Optimizer or a list thereof."
+            )
 
+    # ------------------------------------------------------------------
+    # Training helpers
+    # ------------------------------------------------------------------
 
-    def test_step(self, inputs):
-        """ This step is called by model.evaluate() on a batch-wise level. This function
-        returns loss metrics for the test data.
+    def _normalize_pred(
+        self, y_pred: torch.Tensor, scale_fact: torch.Tensor
+    ) -> torch.Tensor:
+        eps = torch.tensor(self.epsilon, dtype=y_pred.dtype, device=y_pred.device)
+        denom = torch.sqrt(scale_fact) * torch.sqrt((y_pred**2).sum(dim=0) + eps)
+        return y_pred / denom
+
+    def _weight_normaliser(self, inputs: list) -> tuple[torch.Tensor, torch.Tensor]:
         """
+        Phase-1 forward pass: normalise projection weights.
+        Must be called inside ``torch.no_grad()``.
+        """
+        if self.train_DLV:
+            self.set_train_mode()
+        else:
+            self.set_eval_mode()
 
-        inputs = inputs[0]
-        y = self(inputs, training=False)
+        y = self.forward(inputs)
 
-        total_loss = [None] * len(self.model_list)
-        total_CC = [None] * len(self.model_list)
-        total_mse = [None] * len(self.model_list)
-        total_redundancy = [None] * len(self.model_list)
+        y_dtype = y.dtype
+        scale_fact = torch.tensor(
+            self.tot_num, dtype=y_dtype, device=y.device
+        ) / torch.tensor(y.shape[0], dtype=y_dtype, device=y.device)
 
-        inputs_nested = self.organize_inputs_by_model(inputs)
+        y_list = []
+        for v in range(len(self.model_list)):
+            y_view = y[:, :, v]
+            factor_layer = self.model_list[v][-1]  # last element of Sequential
+            y_view = factor_layer.weight_normalizer(y_view, scale_fact, self.train_DLV)
+            y_list.append(y_view)
 
-        for vie in range(len(self.model_list)):
-            y_pred = self.model_list[vie](inputs_nested[vie], training=False)
+        y = torch.stack(y_list, dim=2)
+        return y, scale_fact
 
-            mse_loss = self.mse_loss(y, y_pred, vie)
-            
-            internal_losses = self.model_list[vie].losses
-            if internal_losses:
-                internal_loss = ops.sum(
-                    ops.stack(
-                        [ops.convert_to_tensor(loss, dtype=ops.dtype(mse_loss)) for loss in internal_losses],
-                        axis=0,
-                    ),
-                    axis=0,
-                )
-            else:
-                internal_loss = ops.zeros_like(mse_loss)
+    def _step(
+        self,
+        vie: int,
+        inputs_v,
+        y: torch.Tensor,
+        scale_fact: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Single-view forward + backward pass."""
+        opt = self.optimizers[vie]
+        model = self.model_list[vie]
 
-            loss = mse_loss + internal_loss
+        opt.zero_grad()
 
+        model.train()
+        y_pred = model(inputs_v)
+        y_pred = self._normalize_pred(y_pred, scale_fact)
+        mse = self.mse_loss(y, y_pred, vie)
+
+        reg = model[-1].regularization_loss()
+        loss = mse + reg
+
+        loss.backward()
+        opt.step()
+
+        with torch.no_grad():
             corr = self.corr_metric(y, y_pred, vie)
 
-            total_loss[vie] = ops.sum(loss)
-            total_CC[vie]   = corr
-            total_mse[vie]  = mse_loss
-            total_redundancy[vie] = self.calculate_redundancy(y[:,:,vie])
+        return loss.detach(), mse.detach(), corr.detach()
 
-        self.loss_tracker_total.update_state(ops.stack(total_loss))
-        self.corr_tracker.update_state(ops.stack(total_CC))
-        self.loss_tracker_mse.update_state(ops.stack(total_mse))
-        self.loss_tracker_redundancy.update_state(ops.stack(total_redundancy))
+    # ------------------------------------------------------------------
+    # fit / evaluate / predict
+    # ------------------------------------------------------------------
 
-        return {
-            "total_loss": self.loss_tracker_total.result(),
-            "cross_metric": self.corr_tracker.result(),
-            "mse_loss": self.loss_tracker_mse.result(),
-            "redundancy": self.loss_tracker_redundancy.result()
+    def fit(
+        self,
+        X_list: list,
+        batch_size: int = 32,
+        epochs: int = 10,
+        verbose: bool | int = True,
+        validation_data=None,
+    ) -> dict:
+        """
+        Train the model.
+
+        Parameters
+        ----------
+        X_list : list of array-like
+            One array per data view (numpy or tensor).
+        batch_size : int
+        epochs : int
+        verbose : bool or int
+            0 / False = silent; 1 / True = one line per epoch.
+        validation_data : list or None
+            If provided, evaluate on this data after each epoch and
+            include val metrics in the returned history.
+
+        Returns
+        -------
+        dict with keys ``total_loss``, ``cross_metric``, ``mse_loss``,
+        ``redundancy`` (and ``val_*`` counterparts when validation_data
+        is given), each a list of per-epoch mean values.
+        """
+        if self.optimizers is None:
+            raise RuntimeError("Call compile(optimizer) before fit().")
+
+        self.to(self.device)
+
+        tensors = [torch.as_tensor(x, dtype=torch.float32) for x in X_list]
+        dataset = TensorDataset(*tensors)
+        # drop_last=True prevents single-sample final batches that break BatchNorm
+        loader = DataLoader(
+            dataset, batch_size=batch_size, shuffle=True, drop_last=True
+        )
+
+        # Trigger lazy build of FactorLayer/ZCALayer before the training loop.
+        # Optimizers created before fit() will have empty param groups if the
+        # layers hadn't been built yet; rebuild those optimizers now.
+        with torch.no_grad():
+            sample = [t.to(self.device) for t in next(iter(loader))]
+            self.forward(sample)
+        for i, opt in enumerate(self.optimizers):
+            if all(len(pg["params"]) == 0 for pg in opt.param_groups):
+                self.optimizers[i] = type(opt)(
+                    self.model_list[i].parameters(), **opt.defaults
+                )
+
+        history: dict = {
+            "total_loss": [],
+            "cross_metric": [],
+            "mse_loss": [],
+            "redundancy": [],
         }
 
+        for epoch in range(epochs):
+            self.train()
+            sums = dict(loss=0.0, corr=0.0, mse=0.0, red=0.0)
+            n_batches = 0
 
-    @property
-    def metrics(self):
-        """We list our `Metric` objects here so that `reset_states()` can be
-        called automatically at the start of each epoch
-        or at the start of `evaluate()`."""
+            for batch_tensors in loader:
+                inputs = [t.to(self.device) for t in batch_tensors]
 
-        return [self.loss_tracker_total, self.corr_tracker, self.loss_tracker_mse]
+                # Phase 1: weight normalisation (no gradient tracking)
+                with torch.no_grad():
+                    y, scale_fact = self._weight_normaliser(inputs)
 
+                # Phase 2: per-view gradient updates
+                inputs_nested = self.organize_inputs_by_model(inputs)
+                view_losses, view_corrs, view_mses = [], [], []
 
-    def mse_loss(self, y_true, y_pred, vie):
-    
+                for v in range(len(self.model_list)):
+                    loss, mse, corr = self._step(v, inputs_nested[v], y, scale_fact)
+                    view_losses.append(loss.item())
+                    view_mses.append(mse.item())
+                    view_corrs.append(corr.item())
+
+                with torch.no_grad():
+                    red = float(
+                        torch.stack(
+                            [
+                                self.calculate_redundancy(y[:, :, v])
+                                for v in range(len(self.model_list))
+                            ]
+                        )
+                        .mean()
+                        .item()
+                    )
+
+                sums["loss"] += float(np.mean(view_losses))
+                sums["corr"] += float(np.mean(view_corrs))
+                sums["mse"] += float(np.mean(view_mses))
+                sums["red"] += red
+                n_batches += 1
+
+            n = max(n_batches, 1)
+            epoch_metrics = {k: v / n for k, v in sums.items()}
+
+            history["total_loss"].append(epoch_metrics["loss"])
+            history["cross_metric"].append(epoch_metrics["corr"])
+            history["mse_loss"].append(epoch_metrics["mse"])
+            history["redundancy"].append(epoch_metrics["red"])
+
+            if validation_data is not None:
+                val_metrics = self.evaluate(validation_data, verbose=False)
+                for k, v in val_metrics.items():
+                    history.setdefault(f"val_{k}", []).append(v)
+
+            if verbose:
+                msg = (
+                    f"Epoch {epoch + 1}/{epochs} — "
+                    f"loss: {epoch_metrics['loss']:.4f}  "
+                    f"corr: {epoch_metrics['corr']:.4f}  "
+                    f"red: {epoch_metrics['red']:.4f}"
+                )
+                if validation_data is not None:
+                    val_corr = history.get("val_cross_metric", [None])[-1]
+                    if val_corr is not None:
+                        msg += f"  val_corr: {val_corr:.4f}"
+                print(msg)
+
+        return history
+
+    def evaluate(
+        self,
+        X_list: list,
+        batch_size: int = 256,
+        verbose: bool | int = True,
+    ) -> dict:
         """
-        Mean squared error between y_pred (view vie) and the connected views in y_true.
+        Evaluate the model on a dataset.
 
+        Returns
+        -------
+        dict with keys ``total_loss``, ``cross_metric``, ``mse_loss``,
+        ``redundancy``.
         """
-        # y_true: (batch, ndims, n_views)
-        # y_pred: (batch, ndims)
+        self.to(self.device)
+        self.eval()
 
-        y_pred_exp = ops.expand_dims(y_pred, axis=2)  # (batch, ndims, 1)
+        tensors = [torch.as_tensor(x, dtype=torch.float32) for x in X_list]
+        dataset = TensorDataset(*tensors)
+        loader = DataLoader(
+            dataset, batch_size=batch_size, shuffle=False, drop_last=False
+        )
 
-        # Per-view squared error averaged over batch: (ndims, n_views)
-        se_mean = ops.mean(ops.square(y_true - y_pred_exp), axis=0)
+        sums = dict(loss=0.0, corr=0.0, mse=0.0, red=0.0)
+        n_batches = 0
 
-        # Mask to include only connected views
-        mask = ops.cast(self.Path[vie, :], ops.dtype(se_mean))     # (n_views,)
-        se_mean_masked = se_mean * ops.expand_dims(mask, axis=0)   # (ndims, n_views)
+        with torch.no_grad():
+            for batch_tensors in loader:
+                inputs = [t.to(self.device) for t in batch_tensors]
 
-        mse_loss = ops.sum(se_mean_masked) / 2.0
-        return mse_loss
+                self.set_eval_mode()
+                y = self.forward(inputs)
 
+                inputs_nested = self.organize_inputs_by_model(inputs)
+                view_losses, view_corrs, view_mses = [], [], []
 
-    def corr_metric(self, y_true, y_pred, vie):
-        
+                for v in range(len(self.model_list)):
+                    self.set_eval_mode()
+                    y_pred = self.model_list[v](inputs_nested[v])
+                    mse = self.mse_loss(y, y_pred, v)
+                    reg = self.model_list[v][-1].regularization_loss()
+                    loss = (mse + reg).item()
+                    corr = self.corr_metric(y, y_pred, v).item()
+                    view_losses.append(loss)
+                    view_corrs.append(corr)
+                    view_mses.append(mse.item())
+
+                red = float(
+                    torch.stack(
+                        [
+                            self.calculate_redundancy(y[:, :, v])
+                            for v in range(len(self.model_list))
+                        ]
+                    )
+                    .mean()
+                    .item()
+                )
+
+                sums["loss"] += float(np.mean(view_losses))
+                sums["corr"] += float(np.mean(view_corrs))
+                sums["mse"] += float(np.mean(view_mses))
+                sums["red"] += red
+                n_batches += 1
+
+        n = max(n_batches, 1)
+        metrics = {
+            "total_loss": sums["loss"] / n,
+            "cross_metric": sums["corr"] / n,
+            "mse_loss": sums["mse"] / n,
+            "redundancy": sums["red"] / n,
+        }
+
+        if verbose:
+            print(
+                f"Eval — loss: {metrics['total_loss']:.4f}  "
+                f"corr: {metrics['cross_metric']:.4f}  "
+                f"red: {metrics['redundancy']:.4f}"
+            )
+
+        return metrics
+
+    def predict(
+        self,
+        X_list: list,
+        batch_size: int = 256,
+    ) -> np.ndarray:
         """
-        Mean correlation between y_pred (view vie) and connected views in y_true.
+        Run inference and return DLVs as a numpy array.
+
+        Returns
+        -------
+        np.ndarray, shape (n_samples, ndims, n_views)
         """
+        self.to(self.device)
+        self.eval()
 
-        eps = ops.convert_to_tensor(self.epsilon, dtype=ops.dtype(y_true))
+        tensors = [torch.as_tensor(x, dtype=torch.float32) for x in X_list]
+        dataset = TensorDataset(*tensors)
+        loader = DataLoader(
+            dataset, batch_size=batch_size, shuffle=False, drop_last=False
+        )
 
-        # Center over batch
-        y_true_c = y_true - ops.mean(y_true, axis=0)   # (ndims, n_views) over batch
-        y_pred_c = y_pred - ops.mean(y_pred, axis=0)   # (ndims) over batch
+        chunks = []
+        with torch.no_grad():
+            for batch_tensors in loader:
+                inputs = [t.to(self.device) for t in batch_tensors]
+                self.set_eval_mode()
+                out = self.forward(inputs)
+                chunks.append(out.cpu())
 
-        denom_true = ops.sqrt(ops.sum(ops.square(y_true_c), axis=0) + eps)   # (ndims, n_views)
-        denom_pred = ops.sqrt(ops.sum(ops.square(y_pred_c), axis=0) + eps)   # (ndims,)
+        return torch.cat(chunks, dim=0).numpy()
 
-        y_true_n = y_true_c / denom_true               # (batch, ndims, n_views)
-        y_pred_n = y_pred_c / denom_pred               # (batch, ndims)
+    # ------------------------------------------------------------------
+    # Loss / metric functions
+    # ------------------------------------------------------------------
 
-        y_pred_n = ops.expand_dims(y_pred_n, axis=2)   # (batch, ndims, 1)
-        corr_mat = ops.sum(y_true_n * y_pred_n, axis=0)  # (ndims, n_views)
-
-        # Mask only connected views
-        mask = ops.cast(self.Path[vie, :], ops.dtype(corr_mat))    # (n_views,)
-        corr_masked = corr_mat * ops.expand_dims(mask, axis=0)     # (ndims, n_views)
-
-        # Average over dims and number of connected views
-        n_conn = ops.sum(mask)
-        n_conn_safe = ops.maximum(n_conn, ops.convert_to_tensor(1.0, dtype=ops.dtype(n_conn)))
-        corr_mean = ops.sum(corr_masked) / (n_conn_safe * float(self.ndims))
-
-        return corr_mean
-    
-     # This function avoids problems with passing symbolic 
-     # tensors to ops.shape in tensorflow
-
-    def _shape_fn(self,X):
-        backend = keras.backend.backend()
-        if backend == "tensorflow":
-            shape = tf.shape(X)  # handles unknown ranks
-        else:
-            shape = ops.shape(X)
-        return shape
-    
-
-    def calculate_redundancy(self, Y, epsilon=1e-8):
+    def mse_loss(
+        self,
+        y_true: torch.Tensor,
+        y_pred: torch.Tensor,
+        vie: int,
+    ) -> torch.Tensor:
         """
-        Args:
-            X: Tensor / KerasTensor, shape (N, D). Each column is a variable.
-            epsilon: Small constant for numerical stability.
+        MSE between y_pred (view vie) and connected views in y_true.
 
-        Returns:
-            Scalar tensor: mean(|corr(i, j)|) over all i != j.
+        y_true : (batch, ndims, n_views)
+        y_pred : (batch, ndims)
         """
-        Y = ops.convert_to_tensor(Y)
-        Y = ops.cast(Y, "float32")
+        y_pred_exp = y_pred.unsqueeze(2)  # (batch, ndims, 1)
+        se_mean = ((y_true - y_pred_exp) ** 2).mean(dim=0)  # (ndims, n_views)
 
-        # Center columns
-        col_mean = ops.mean(Y, axis=0, keepdims=True)
+        mask = self.Path[vie, :].to(se_mean.dtype)  # (n_views,)
+        se_mean_masked = se_mean * mask.unsqueeze(0)  # (ndims, n_views)
+
+        return se_mean_masked.sum() / 2.0
+
+    def corr_metric(
+        self,
+        y_true: torch.Tensor,
+        y_pred: torch.Tensor,
+        vie: int,
+    ) -> torch.Tensor:
+        """Mean correlation between y_pred (view vie) and connected views."""
+        eps = torch.tensor(self.epsilon, dtype=y_true.dtype, device=y_true.device)
+
+        y_true_c = y_true - y_true.mean(dim=0)
+        y_pred_c = y_pred - y_pred.mean(dim=0)
+
+        denom_true = ((y_true_c**2).sum(dim=0) + eps).sqrt()
+        denom_pred = ((y_pred_c**2).sum(dim=0) + eps).sqrt()
+
+        y_true_n = y_true_c / denom_true
+        y_pred_n = y_pred_c / denom_pred
+
+        y_pred_n_exp = y_pred_n.unsqueeze(2)  # (batch, ndims, 1)
+        corr_mat = (y_true_n * y_pred_n_exp).sum(dim=0)  # (ndims, n_views)
+
+        mask = self.Path[vie, :].to(corr_mat.dtype)
+        corr_masked = corr_mat * mask.unsqueeze(0)
+
+        n_conn = mask.sum()
+        n_conn_safe = torch.clamp(n_conn, min=1.0)
+        return corr_masked.sum() / (n_conn_safe * float(self.ndims))
+
+    def calculate_redundancy(
+        self, Y: torch.Tensor, epsilon: float = 1e-8
+    ) -> torch.Tensor:
+        """Mean |corr(i, j)| over all off-diagonal pairs in Y columns."""
+        Y = Y.float()
+        col_mean = Y.mean(dim=0, keepdim=True)
         Yc = Y - col_mean
 
-        backend = keras.backend.backend()
+        n_f = float(Yc.shape[0])
+        denom_n = max(n_f - 1.0, 1.0)
 
-        # Sample-size for covariance
-        n = self._shape_fn(Yc)[0]
-        n_f = ops.cast(n, Y.dtype)
-        denom_n = ops.maximum(n_f - 1.0, 1.0)  # guard when N == 1
+        cov = (Yc.T @ Yc) / denom_n
+        var = (Yc * Yc).sum(dim=0) / denom_n
+        std = (var.clamp(min=epsilon)).sqrt()
 
-        # Covariance between columns: (D x D)
-        cov = ops.matmul(ops.transpose(Yc), Yc) / denom_n
+        std_col = std.unsqueeze(1)
+        denom = (std_col @ std_col.T).clamp(min=epsilon)
+        corr = cov / denom
 
-        # Column std devs (D,)
-        var = ops.sum(Yc * Yc, axis=0) / denom_n
-        std = ops.sqrt(ops.maximum(var, epsilon))
-
-        # Correlation matrix: cov / (std_i * std_j)
-        std_col = ops.reshape(std, (-1, 1))              # (D,1)
-        denom = std_col * ops.transpose(std_col)         # (D,D)
-        corr = cov / ops.maximum(denom, epsilon)         # (D,D)
-
-        # Mean absolute correlation over off-diagonal entries
-        corr_abs = ops.abs(corr)
-        D = self._shape_fn(corr_abs)[0]
-        mask = ops.ones_like(corr_abs) - ops.cast(ops.eye(D), corr_abs.dtype)  # zero diagonal
-        total = ops.sum(corr_abs * mask)
-
-        D_f = ops.cast(D, corr_abs.dtype)
-        num_pairs = ops.maximum(D_f * (D_f - 1.0), 1.0)  # count of off-diagonal entries
-
+        corr_abs = corr.abs()
+        D = corr_abs.shape[0]
+        mask = torch.ones_like(corr_abs) - torch.eye(
+            D, device=corr_abs.device, dtype=corr_abs.dtype
+        )
+        total = (corr_abs * mask).sum()
+        num_pairs = max(float(D) * (float(D) - 1.0), 1.0)
         return total / num_pairs
 
-
-
-    from keras import ops
-
-    def calculate_corrmat(self, DLVs):
+    def calculate_corrmat(self, DLVs) -> list:
         """
-        Compute Pearson correlation matrices for a 3D tensor using keras.ops.
-        DLVs: (n_samples, dimensions, DLVs)
-        Returns: list of (DLVs x DLVs) per dimension.
+        Pearson correlation matrices for a 3-D tensor.
+
+        Parameters
+        ----------
+        DLVs : array-like, shape (n_samples, ndims, n_views)
+
+        Returns
+        -------
+        list of (n_views × n_views) tensors, one per DLV dimension.
         """
-        if len(DLVs.shape) != 3:
-            raise ValueError("Input must be a 3D tensor")
+        if not isinstance(DLVs, torch.Tensor):
+            DLVs = torch.tensor(DLVs, dtype=torch.float32)
 
-        # ✅ Ensure we’re working with a backend tensor, even if DLVs was numpy
-        DLVs = ops.convert_to_tensor(DLVs)
+        if DLVs.ndim != 3:
+            raise ValueError("Input must be a 3-D tensor (n_samples, ndims, n_views).")
 
-        correlation_matrices = []
-        n_samples = ops.cast(self._shape_fn(DLVs)[0], DLVs.dtype)
-        eps = ops.convert_to_tensor(1e-7, dtype=DLVs.dtype)
+        n_samples = float(DLVs.shape[0])
+        eps = 1e-7
+        n_dims = DLVs.shape[1]
 
-        # Use shape function to be backend-friendly
-        n_dims = int(self._shape_fn(DLVs)[1])
-
+        corr_matrices = []
         for dim in range(n_dims):
-            dim_DLVs = DLVs[:, dim, :]  # (n_samples, n_feats)
-            mean_centered = dim_DLVs - ops.mean(dim_DLVs, axis=0)
-            std_dev = ops.std(dim_DLVs, axis=0) + eps
-            normalized = mean_centered / std_dev
-            correlation_matrix = ops.matmul(
-                ops.transpose(normalized),
-                normalized
-            ) / n_samples
-            correlation_matrices.append(correlation_matrix)
+            x = DLVs[:, dim, :]  # (n_samples, n_views)
+            x_centered = x - x.mean(dim=0)
+            std = x.std(dim=0) + eps
+            normalized = x_centered / std
+            corr = (normalized.T @ normalized) / n_samples
+            corr_matrices.append(corr)
 
-        return correlation_matrices
+        return corr_matrices
 
-        
+    # ------------------------------------------------------------------
+    # Serialisation
+    # ------------------------------------------------------------------
 
-    def plot_structural_model(self, outputname):
-        """
-        This function plots the structural/path. model. Visualisation is quite simple. 
-        Aesthetics are similar to those used in keras.utils.plot_model()
-        outputname: This is the name of the output where we save the results. 
+    def save(self, path: str) -> None:
+        """Save model weights and config to a file."""
+        torch.save(
+            {
+                "state_dict": self.state_dict(),
+                "config": {
+                    "Path": self.Path.cpu().numpy(),
+                    "tot_num": self.tot_num,
+                    "ndims": self.ndims,
+                    "orthogonalization": self.orthogonalization,
+                    "momentum": self.momentum,
+                    "epsilon": self.epsilon,
+                    "train_DLV": self.train_DLV,
+                    "is_siamese": self.is_siamese,
+                    "diag_offset": self.diag_offset,
+                },
+            },
+            path,
+        )
 
-        """
-        # Create a PyDot graph
-        graph = pydot.Dot(graph_type='digraph', rankdir='TB')
+    # ------------------------------------------------------------------
+    # Visualisation
+    # ------------------------------------------------------------------
 
-        model_layer_list= [len(model.layers) for model in self.model_list]
+    def plot_structural_model(self, outputname: str) -> None:
+        """Render the path model as a directed graph (PNG)."""
+        graph = pydot.Dot(graph_type="digraph", rankdir="TB")
 
-        # Create nodes with labels
+        layer_counts = [len(list(m.modules())) for m in self.model_list]
         for i in range(len(self.model_list)):
+            label = f"Measurement Model {i}, {layer_counts[i]} modules"
+            node = pydot.Node(str(i), label=label, shape="record")
+            graph.add_node(node)
 
-            label = "Measurement Model " + str(i) + "," + " " + str(model_layer_list[i]) + " layers"
-            node = pydot.Node(str(i), label=label, shape="record") # create nodes to add to the pydot object
-            graph.add_node(node) # add nodes to the pydot graph object
-
-        adj_matrix = self.Path # this is the path. model we wish to plot
-
-        # Create edges
-        for i, row in enumerate(adj_matrix):
+        adj = self.Path.cpu().numpy()
+        for i, row in enumerate(adj):
             for j, val in enumerate(row):
                 if val == 1:
-                    edge = pydot.Edge(str(i), str(j))
-                    graph.add_edge(edge)
+                    graph.add_edge(pydot.Edge(str(i), str(j)))
 
         graph.write_png(outputname)
-
-            
-
-    def get_config(self):
-
-        """
-        Gets configuration of the model for serialization.
-
-        Returns:
-            Dictionary containing the configuration of the model.
-        """
-
-        base_config = super().get_config()
-        
-        # Serialize each model in the model list using a list comprehension
-        serialized_model_list = [keras.utils.serialize_keras_object(model) for model in self.model_list]
-        regularized_model_list = [keras.utils.serialize_keras_object(regularizer) for regularizer in self.regularizer_list]
-        
-        config = {
-            "Path": np.asarray(self.Path).tolist(),
-            "model_list": serialized_model_list,  # Include serialized model list in the configuration
-            "regularizer_list": regularized_model_list,
-            "tot_num": self.tot_num,
-            "ndims": self.ndims,  
-            "orthogonalization": self.orthogonalization
-        }
-    
-        return {**base_config, **config}
-    
-    @classmethod    
-    def from_config(cls, config):
-        """
-        Creates an instance of the class from a config dictionary.
-
-        Args:
-            config (dict): A dictionary containing the configuration of the instance.
-
-        Returns:
-            An instance of the class.
-        """
-        # Deserialize Keras/TensorFlow objects
-        config['Path'] = ops.convert_to_tensor(config["Path"], dtype=ops.floatx())
-        
-        # Deserialize each model in the model list using a list comprehension
-        config['model_list'] = [keras.utils.deserialize_keras_object(model_config) for model_config in config['model_list']]
-        config['run_from_config'] = True
-        
-        # If regularization is present in the config, deserialize it
-        if 'regularizer_list' in config:
-            config['regularizer_list'] = [keras.utils.deserialize_keras_object(regularizer_config) for regularizer_config in config['regularizer_list']]
-        
-        return cls(**config)
-    
-    def get_compile_config(self):
-        """
-        Serializes the optimizer configurations of the models.
-
-        Returns:
-            dict: A dictionary containing the serialized optimizer configurations of the models.
-        """
-        return {
-            "model_optimizers": [keras.utils.serialize_keras_object(model.optimizer) for model in self.model_list]
-        }
-    
-    def compile_from_config(self, config):
-        """
-        Compiles the models with the deserialized optimizer configurations.
-
-        Args:
-            config (dict): A dictionary containing the serialized optimizer configurations.
-        """
-        optimizer_list = [keras.utils.deserialize_keras_object(optimizer_config) for optimizer_config in config["model_optimizers"]]
-        self.compile(optimizer_list)
-
-    def build_from_config(self, config):
-        """ build is overwritten here as it is not needed. Individual measurement models
-        are built seperately, this happens when keras.saving.deserialize_keras_object is called
-        on models in model_list"""
-
-        return
-    

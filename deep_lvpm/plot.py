@@ -1,298 +1,22 @@
-import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.patches import Wedge
-from matplotlib.collections import LineCollection
+import numpy as np
 from matplotlib import cm
+from matplotlib.collections import LineCollection
+from matplotlib.patches import Wedge
 
 
 def _to_numpy(x):
-    """Best-effort conversion of common tensor types to a NumPy array.
-
-    Supports:
-    - NumPy arrays (returned unchanged)
-    - TensorFlow tensors (via .numpy() when available)
-    - PyTorch tensors (via .detach().cpu().numpy())
-    Falls back to np.asarray for other array-likes.
-    """
+    """Convert a tensor or array-like to a NumPy array."""
     if isinstance(x, np.ndarray):
         return x
-
-    # TensorFlow tensor support
-    try:
-        import tensorflow as tf  # type: ignore
-
-        if isinstance(x, tf.Tensor):
-            try:
-                return x.numpy()
-            except Exception:
-                pass
-    except Exception:
-        # TF not installed or x is not a TF tensor
-        pass
-
-    # PyTorch tensor support
     try:
         import torch  # type: ignore
 
         if isinstance(x, torch.Tensor):
-            try:
-                return x.detach().cpu().numpy()
-            except Exception:
-                pass
-    except Exception:
-        # Torch not installed or x is not a Torch tensor
+            return x.detach().cpu().numpy()
+    except ImportError:
         pass
-
-    # Generic fallback
     return np.asarray(x)
-
-
-# def plot_correlation_chord_gradient(
-#     corr_matrix,
-#     labels,
-#     min_corr=0.2,
-#     figsize=(8, 8),
-#     node_cmap_name="Pastel1",   # pastel, seaborn-like
-#     save_path=None,
-#     dpi=300,
-#     show=True,
-# ):
-#     """
-#     Plot a chord diagram for a correlation matrix with:
-#       * one color per variable (node), in a pastel gradient
-#       * chord thickness clearly proportional to correlation strength
-#       * chord color smoothly transitioning between the two node colors
-
-#     Parameters
-#     ----------
-#     corr_matrix : array-like, shape (n, n)
-#         Symmetric correlation matrix with values in [-1, 1].
-#     labels : list of str, length n
-#         Labels for rows/columns of the matrix.
-#     min_corr : float
-#         Absolute correlation threshold; smaller values are not drawn.
-#     figsize : tuple
-#         Figure size.
-#     node_cmap_name : str
-#         Name of the matplotlib colormap used to generate node colors.
-#     save_path : str or None
-#         If given, save the figure to this path (e.g. "out/chord.png").
-#         If None, the figure is not saved.
-#     dpi : int
-#         Resolution (dots per inch) when saving.
-#     show : bool
-#         If True, display the plot with plt.show().
-
-#     Returns
-#     -------
-#     fig, ax : matplotlib Figure and Axes
-#     """
-#     corr = np.asarray(corr_matrix)
-#     if corr.shape[0] != corr.shape[1]:
-#         raise ValueError("corr_matrix must be square.")
-#     n = corr.shape[0]
-#     if len(labels) != n:
-#         raise ValueError("labels length must match corr_matrix size.")
-
-#     fig, ax = plt.subplots(figsize=figsize)
-#     ax.set_aspect("equal")
-#     ax.axis("off")
-
-#     # Angles of node centers
-#     angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
-#     base_radius = 1.0
-#     inner_radius = 0.9
-#     outer_radius = 1.1
-
-#     # Pastel colors for nodes, sampled along the colormap as a smooth gradient
-#     cmap_nodes = cm.get_cmap(node_cmap_name)
-#     node_colors = [cmap_nodes(i / max(n - 1, 1)) for i in range(n)]
-
-#     # Draw node arcs
-#     for i, angle in enumerate(angles):
-#         theta1 = np.degrees(angle - np.pi / n)
-#         theta2 = np.degrees(angle + np.pi / n)
-#         wedge = Wedge(
-#             center=(0, 0),
-#             r=outer_radius,
-#             theta1=theta1,
-#             theta2=theta2,
-#             width=outer_radius - inner_radius,
-#             facecolor=node_colors[i],
-#             edgecolor="white",
-#             linewidth=1.0,
-#         )
-#         ax.add_patch(wedge)
-
-#     # Place labels slightly outside the ring
-#     for i, angle in enumerate(angles):
-#         label_angle = angle
-#         x = (outer_radius + 0.18) * np.cos(label_angle)
-#         y = (outer_radius + 0.18) * np.sin(label_angle)
-
-#         ha = "left" if x >= 0 else "right"
-#         rotation = np.degrees(label_angle)
-#         if x < 0:
-#             rotation += 180  # keep text upright
-
-#         ax.text(
-#             x,
-#             y,
-#             labels[i],
-#             ha=ha,
-#             va="center",
-#             rotation=rotation,
-#             rotation_mode="anchor",
-#             fontsize=11,
-#         )
-
-#     # Precompute node positions
-#     node_xy = np.column_stack(
-#         (base_radius * np.cos(angles), base_radius * np.sin(angles))
-#     )
-
-#     def add_chord(p0, p1, color0, color1, corr_val, min_corr,
-#                   lw_min=1.5, lw_max=9.0):
-#         """
-#         Draw a single chord as a quadratic Bézier curve with gradient color.
-#         Line width is a *linear* rescaling of |corr_val| from [min_corr, 1]
-#         into [lw_min, lw_max], so strength is visually obvious.
-#         """
-#         num_points = 80
-#         ts = np.linspace(0, 1, num_points)
-
-#         # Control point towards the center (you can tweak 0.3 for curvature)
-#         control = 0.3 * (p0 + p1) / 2.0
-
-#         points = np.empty((num_points, 2))
-#         colors = np.empty((num_points, 4))
-#         c0 = np.array(color0)
-#         c1 = np.array(color1)
-
-#         for k, t in enumerate(ts):
-#             # Quadratic Bézier interpolation
-#             points[k] = (
-#                 (1 - t) ** 2 * p0
-#                 + 2 * (1 - t) * t * control
-#                 + t**2 * p1
-#             )
-#             colors[k] = (1 - t) * c0 + t * c1
-
-#         segments = np.stack([points[:-1], points[1:]], axis=1)
-#         seg_colors = colors[:-1]
-
-#         # Strength-normalised width and alpha
-#         abs_val = abs(corr_val)
-#         strength = (abs_val - min_corr) / (1.0 - min_corr)
-#         strength = max(0.0, min(1.0, strength))
-#         lw = lw_min + strength * (lw_max - lw_min)
-#         alpha = 0.35 + 0.55 * strength  # stronger = more opaque
-
-#         lc = LineCollection(segments, colors=seg_colors,
-#                             linewidths=lw, alpha=alpha)
-#         ax.add_collection(lc)
-
-#     # Draw chords
-#     for i in range(n):
-#         for j in range(i + 1, n):
-#             val = corr[i, j]
-#             if np.isnan(val) or abs(val) < min_corr:
-#                 continue
-#             add_chord(node_xy[i], node_xy[j],
-#                       node_colors[i], node_colors[j],
-#                       val, min_corr)
-
-#     ax.set_xlim(-1.5, 1.5)
-#     ax.set_ylim(-1.5, 1.5)
-
-#     # Save if requested
-#     if save_path is not None:
-#         fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
-
-#     # Show if requested
-#     if show:
-#         plt.show()
-
-#     return fig, ax
-
-
-# # ------------------------------------------------------------------
-# # Example data: synthetic multi-omics correlation matrix
-# # ------------------------------------------------------------------
-# if __name__ == "__main__":
-#     omics_labels = [
-#         "Genomics",
-#         "Transcriptomics",
-#         "Proteomics",
-#         "Metabolomics",
-#         "Epigenomics",
-#         "Microbiome",
-#         "Phosphoproteomics",
-#     ]
-
-#     n = len(omics_labels)
-#     rng = np.random.default_rng(0)
-
-#     # Start from identity
-#     base = np.eye(n)
-
-#     # Strong positive correlations along a plausible omics chain
-#     strong_pairs = [
-#         (0, 1),  # Genomics - Transcriptomics
-#         (1, 2),  # Transcriptomics - Proteomics
-#         (2, 3),  # Proteomics - Metabolomics
-#         (3, 4),  # Metabolomics - Epigenomics
-#         (4, 0),  # Epigenomics - Genomics
-#     ]
-#     for i, j in strong_pairs:
-#         val = rng.uniform(0.7, 0.95)
-#         base[i, j] = base[j, i] = val
-
-#     # Moderate correlations
-#     moderate_pairs = [
-#         (0, 2),
-#         (1, 3),
-#         (2, 4),
-#         (3, 5),
-#         (4, 6),
-#         (1, 6),
-#     ]
-#     for i, j in moderate_pairs:
-#         val = rng.uniform(0.3, 0.6)
-#         base[i, j] = base[j, i] = val
-
-#     # Add small symmetric noise to other entries
-#     noise = rng.normal(0, 0.08, size=(n, n))
-#     noise = (noise + noise.T) / 2
-#     np.fill_diagonal(noise, 0.0)
-#     corr_example = base + noise
-#     corr_example = np.clip(corr_example, -1, 1)
-
-#     # Example 1: just display
-#     fig, ax = plot_correlation_chord_gradient(
-#         corr_example,
-#         omics_labels,
-#         min_corr=0.25,      # only draw reasonably strong links
-#         figsize=(8, 8),
-#         node_cmap_name="Pastel1",   # pastel, seaborn-ish
-#         save_path=None,             # no saving
-#         show=True,                  # display the figure
-#     )
-
-#     # Example 2 (commented out): save instead of / as well as display
-
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.patches import Wedge
-from matplotlib.collections import LineCollection
-from matplotlib import cm
-
-
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.patches import Wedge
-from matplotlib.collections import LineCollection
-from matplotlib import cm
 
 
 def plot_correlation_chord_row(
@@ -300,7 +24,7 @@ def plot_correlation_chord_row(
     labels,
     min_corr=0.2,
     panel_size=(4, 4),
-    node_cmap_name="Pastel1",   # pastel, seaborn-like
+    node_cmap_name="Pastel1",  # pastel, seaborn-like
     figure_title=None,
     show_edge_labels=False,
     save_path=None,
@@ -383,8 +107,9 @@ def plot_correlation_chord_row(
         (base_radius * np.cos(angles), base_radius * np.sin(angles))
     )
 
-    def add_chord(ax, p0, p1, color0, color1, corr_val, min_corr,
-                  lw_min=1.5, lw_max=9.0):
+    def add_chord(
+        ax, p0, p1, color0, color1, corr_val, min_corr, lw_min=1.5, lw_max=9.0
+    ):
         """
         Draw a single chord as a quadratic Bézier curve with gradient color.
         Line width is a linear rescaling of |corr_val| from [min_corr, 1]
@@ -408,11 +133,7 @@ def plot_correlation_chord_row(
 
         for k, t in enumerate(ts):
             # Quadratic Bézier interpolation
-            points[k] = (
-                (1 - t) ** 2 * p0
-                + 2 * (1 - t) * t * control
-                + t**2 * p1
-            )
+            points[k] = (1 - t) ** 2 * p0 + 2 * (1 - t) * t * control + t**2 * p1
             colors[k] = (1 - t) * c0 + t * c1
 
         segments = np.stack([points[:-1], points[1:]], axis=1)
@@ -425,16 +146,13 @@ def plot_correlation_chord_row(
         lw = lw_min + strength * (lw_max - lw_min)
         alpha = 0.35 + 0.55 * strength  # stronger = more opaque
 
-        lc = LineCollection(segments, colors=seg_colors,
-                            linewidths=lw, alpha=alpha)
+        lc = LineCollection(segments, colors=seg_colors, linewidths=lw, alpha=alpha)
         ax.add_collection(lc)
 
         # Midpoint of the chord curve (approximate)
         mid_t = 0.5
         midpoint = (
-            (1 - mid_t) ** 2 * p0
-            + 2 * (1 - mid_t) * mid_t * control
-            + mid_t**2 * p1
+            (1 - mid_t) ** 2 * p0 + 2 * (1 - mid_t) * mid_t * control + mid_t**2 * p1
         )
         return midpoint
 
@@ -489,9 +207,12 @@ def plot_correlation_chord_row(
                     continue
                 mid_xy = add_chord(
                     ax,
-                    node_xy[i], node_xy[j],
-                    node_colors[i], node_colors[j],
-                    val, min_corr
+                    node_xy[i],
+                    node_xy[j],
+                    node_colors[i],
+                    node_colors[j],
+                    val,
+                    min_corr,
                 )
 
                 if show_edge_labels:

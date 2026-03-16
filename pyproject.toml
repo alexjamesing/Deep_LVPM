@@ -1,0 +1,27 @@
+[project]
+name = "deep-lvpm"
+version = "0.2.3"
+description = "Deep Latent Variable Path Modelling"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10,<3.13"
+
+dependencies = [
+    "torch>=2.0",
+    "torchvision",
+    "torchaudio",
+    "pydot>=4.0",
+    "scikit-learn>=1.6",
+    "matplotlib>=3.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.urls]
+Homepage = "https://deep-lvpm.readthedocs.io"
+
+[[tool.uv.index]]
+name = "pytorch-gpu"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true

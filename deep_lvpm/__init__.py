@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Created on Sat Oct  8 06:03:24 2022
+from deep_lvpm.layers.ConfoundLayer import ConfoundLayer
+from deep_lvpm.layers.FactorLayer import FactorLayer
+from deep_lvpm.layers.ZCALayer import ZCALayer
+from deep_lvpm.model import StructuralModel
+from deep_lvpm.plot import plot_correlation_chord_row
 
-@author: ing
-"""
+__all__ = [
+    "StructuralModel",
+    "FactorLayer",
+    "ZCALayer",
+    "ConfoundLayer",
+    "plot_correlation_chord_row",
+]

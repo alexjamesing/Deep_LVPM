@@ -3,123 +3,69 @@
   <img src="dlvpm_logo_final.png" alt="Deep LVPM logo" width="35%">
 </p>
 
-Deep Latent Variable Path Modelling (DLVPM) is a method for path/structural equation modelling utilising deep neural networks. The aim of the method is to connect different data types together via sets of orthogonal deep latent variables (DLVs). Full documentation for this package can be found here: https://deep-lvpm.readthedocs.io/en/latest/. This work has now been published here: https://www.nature.com/articles/s42256-025-01052-4. 
+# Deep Latent Variable Path Modelling (DLVPM)
 
-Backend-agnostic with Keras 3: DLVPM is implemented on Keras 3 and runs backend-agnostically on either TensorFlow or PyTorch; select your preferred backend by installing the corresponding extra (e.g., tf-cpu, tf-gpu, tf-apple, torch-cpu, torch-apple, or preinstall CUDA PyTorch for torch-gpu) and, if needed, set KERAS_BACKEND=tensorflow or KERAS_BACKEND=torch. The high-level Keras API (model.fit, model.evaluate, etc.) is unchanged across backends.
+Deep Latent Variable Path Modelling (DLVPM) is a framework for **path / structural equation modelling using deep neural networks**. The method links heterogeneous datasets through sets of **orthogonal deep latent variables (DLVs)**, enabling structured multimodal learning.
 
-If you find this project valuable, please consider giving it a star on GitHub.  Your support helps others discover the project and motivates continued development!
+Full documentation:
+[https://deep-lvpm.readthedocs.io/en/latest/](https://deep-lvpm.readthedocs.io/en/latest/)
+
+Published in Deep Latent Variable Path Modelling in Nature Machine Intelligence.
+
+If you find this project useful, consider starring the repository on GitHub.
 
 ![Chord animation](chord_animation.gif)
 
-The gif above shows a plot of model training in progress on a three factor DLVPM model linking different omics and Imaging data types from Lung Cancer patients. The dataset this model is trained on is included in this package.
-
-# Installing deep-lvpm (keras 3 / multi-backend) — keras3 branch
-
-> **TL;DR:** This branch uses **Keras 3** (multi-backend). You must install **one backend** (TensorFlow **or** PyTorch) via the provided extras. Then install from the **`keras3`** branch URL.
+The animation above shows model training for a **three-factor DLVPM model** linking omics and imaging data from lung cancer patients.
+This dataset is included with the package.
 
 ---
 
-## Choose a backend
-
-### TensorFlow (default)
-- CPU: `tf-cpu`
-- NVIDIA GPU on **Linux** (bundled CUDA wheels): `tf-gpu`
-- Apple Silicon (M-series): `tf-apple`
-
-### PyTorch
-- CPU (Linux/Windows/macOS Intel): `torch-cpu`
-- Apple Silicon (M-series): `torch-apple`
-- NVIDIA GPU: `torch-gpu` *(empty extra; preinstall CUDA wheels from pytorch.org first)*
-
-
-### Python
-- Python `>= 3.11` 
----
-
-## Conda (recommended)
-
-Create and activate an environment:
+# Installation
 
 ```bash
-conda create -n dlvpm-k3 python=3.11 -y
-conda activate dlvpm-k3
+uv pip install .
 ```
 
-### TensorFlow backends
-
-**CPU (Linux/Windows/Intel Mac):**
+[Optional] Dev tools
 ```bash
-pip install "git+https://github.com/alexjamesing/Deep_LVPM.git@keras3#egg=deep-lvpm[tf-cpu]"
-```
-
-**NVIDIA GPU (Linux, bundled CUDA):**
-```bash
-pip install "git+https://github.com/alexjamesing/Deep_LVPM.git@keras3#egg=deep-lvpm[tf-gpu]"
-```
-
-**Apple Silicon (M-series):**
-```bash
-pip install "git+https://github.com/alexjamesing/Deep_LVPM.git@keras3#egg=deep-lvpm[tf-apple]"
-```
-
-### PyTorch backends
-
-**CPU (Linux/Windows/macOS Intel):**
-```bash
-pip install "git+https://github.com/alexjamesing/Deep_LVPM.git@keras3#egg=deep-lvpm[torch-cpu]"
-```
-
-**Apple Silicon (M-series):**
-```bash
-pip install "git+https://github.com/alexjamesing/Deep_LVPM.git@keras3#egg=deep-lvpm[torch-apple]"
-```
-
-**NVIDIA GPU (CUDA):**
-```bash
-# 1) Install CUDA-enabled PyTorch from https://pytorch.org (per your CUDA/driver), e.g.:
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-# 2) Then install deep-lvpm without pulling CPU wheels:
-pip install "git+https://github.com/alexjamesing/Deep_LVPM.git@keras3#egg=deep-lvpm[torch-gpu]"
+uv pip install .[dev]
 ```
 
 ---
 
-## venv
+# Tutorials
 
-Create and activate a virtual environment:
+Three runnable tutorials are included: 
 
+Associate MNIST images with digit labels.
 ```bash
-python3 -m venv dlvpm-k3
-source dlvpm-k3/bin/activate   # Windows: dlvpm-k3\Scripts\activate
+uv run -m deep_lvpm.tutorial.run_mnist
 ```
-Then choose **one** of the same install lines as above (e.g., `...[tf-cpu]`, `...[tf-gpu]`, etc.).
+
+Integrate five TCGA lung cancer modalities.
+```bash
+uv run -m deep_lvpm.tutorial.run_tcga
+```
+
+Demonstrate a Siamese encoder on CIFAR-10.
+```bash
+uv run -m deep_lvpm.tutorial.run_siamese
+```
+
+All tutorials report the following metrics from `StructuralModel.evaluate`:
+
+* `total_loss`
+* `cross_metric`
+* `mse_loss`
+* `redundancy`
 
 ---
 
-## Verifying the backend
+# Testing
+
+Run the test suite with:
 
 ```bash
-python -c "import keras, os; print('KERAS_BACKEND=', os.getenv('KERAS_BACKEND')); print('Detected backend:', keras.backend.backend())"
+uv run -m tests.run_tests
 ```
-
-If needed, set the backend explicitly and re-run:
-```bash
-export KERAS_BACKEND=tensorflow   # or: torch
-```
-
-
-## Notes
-
-- `tf-gpu` is **Linux-only** and uses `tensorflow[and-cuda]` (no separate CUDA toolkit install required).
-- `torch-gpu` extra is intentionally empty to avoid pulling CPU wheels from PyPI; always install CUDA-enabled PyTorch first.
-- If multiple backends are installed, Keras will pick one; use `KERAS_BACKEND` to force your choice.
-
-## Tutorials & Metrics
-
-Three turnkey tutorials ship with the toolbox and default to the TensorFlow backend. Launch them with:
-
-- `python -m deep_lvpm.tutorial.tutorial_mnist_tf` – associate MNIST images with labels and visualise the latent space.
-- `python -m deep_lvpm.tutorial.tutorial_tcga_tf` – integrate five TCGA lung cancer modalities using residual encoders.
-- `python -m deep_lvpm.tutorial.tutorial_siamese_tf` – train a Siamese encoder on CIFAR-10 and probe the embeddings linearly.
-
-All tutorials report the expanded `StructuralModel.evaluate` metrics (`total_loss`, `cross_metric`, `mse_loss`, and `redundancy`) introduced in this release so you can monitor both cross-view alignment and within-view redundancy.
