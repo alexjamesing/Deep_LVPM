@@ -197,16 +197,6 @@ class StructuralModel(nn.Module):
         with torch.no_grad():
             self.forward(tensors)
 
-    def set_train_mode(self) -> None:
-        """Set training mode for all sub-models."""
-        for model in self.model_list:
-            model.train()
-
-    def set_eval_mode(self) -> None:
-        """Set evaluation mode for all sub-models."""
-        for model in self.model_list:
-            model.eval()
-
     # ------------------------------------------------------------------
     # Compile
     # ------------------------------------------------------------------
@@ -248,9 +238,9 @@ class StructuralModel(nn.Module):
         Must be called inside ``torch.no_grad()``.
         """
         if self.train_DLV:
-            self.set_train_mode()
+            self.train()
         else:
-            self.set_eval_mode()
+            self.eval()
 
         y = self.forward(inputs)
 
@@ -460,14 +450,13 @@ class StructuralModel(nn.Module):
             for batch_tensors in loader:
                 inputs = [t.to(self.device) for t in batch_tensors]
 
-                self.set_eval_mode()
+                self.eval()
                 y = self.forward(inputs)
 
                 inputs_nested = self.organize_inputs_by_model(inputs)
                 view_losses, view_corrs, view_mses = [], [], []
 
                 for v in range(len(self.model_list)):
-                    self.set_eval_mode()
                     y_pred = self.model_list[v](inputs_nested[v])
                     mse = self.mse_loss(y, y_pred, v)
                     reg = self.model_list[v][-1].regularization_loss()
@@ -536,7 +525,6 @@ class StructuralModel(nn.Module):
         with torch.no_grad():
             for batch_tensors in loader:
                 inputs = [t.to(self.device) for t in batch_tensors]
-                self.set_eval_mode()
                 out = self.forward(inputs)
                 chunks.append(out.cpu())
 
