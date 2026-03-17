@@ -24,10 +24,11 @@ This dataset is included with the package.
 # Installation
 
 ```bash
+uv venv  # create environment
 uv pip install .
 ```
 
-[Optional] Dev tools
+[Optional] Dev tools, required for testing 
 ```bash
 uv pip install .[dev]
 ```

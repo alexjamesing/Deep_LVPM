@@ -21,6 +21,9 @@ dev = ["pytest"]
 [project.urls]
 Homepage = "https://deep-lvpm.readthedocs.io"
 
+[tool.setuptools.packages.find]
+include = ["deep_lvpm*"]
+
 [[tool.uv.index]]
 name = "pytorch-gpu"
 url = "https://download.pytorch.org/whl/cu124"
