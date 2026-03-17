@@ -381,6 +381,7 @@ class StructuralModel(nn.Module):
         epochs: int = 10,
         verbose: bool | int = True,
         validation_data=None,
+        schedulers: list | None = None,
     ) -> dict:
         """
         Train the model.
@@ -487,17 +488,49 @@ class StructuralModel(nn.Module):
                     history.setdefault(f"val_{k}", []).append(v)
 
             if verbose:
-                msg = (
-                    f"Epoch {epoch + 1}/{epochs} — "
-                    f"loss: {epoch_metrics['loss']:.4f}  "
-                    f"corr: {epoch_metrics['corr']:.4f}  "
-                    f"red: {epoch_metrics['red']:.4f}"
+
+                def _fmt(label, m_loss, m_corr, m_mse, m_red):
+                    return (
+                        f"  {label:>5} — loss↓: {m_loss:.5f}   "
+                        f"corr: {m_corr:.5f}  "
+                        f"mse: {m_mse:.5f}  "
+                        f"red: {m_red:.5f}"
+                    )
+
+                lines = [f"Epoch {epoch + 1}/{epochs}"]
+                lines.append(
+                    _fmt(
+                        "train",
+                        epoch_metrics["loss"],
+                        epoch_metrics["corr"],
+                        epoch_metrics["mse"],
+                        epoch_metrics["red"],
+                    )
                 )
                 if validation_data is not None:
-                    val_corr = history.get("val_cross_metric", [None])[-1]
-                    if val_corr is not None:
-                        msg += f"  val_corr: {val_corr:.4f}"
-                print(msg)
+                    vm = {
+                        k: history[f"val_{k}"][-1]
+                        for k in (
+                            "total_loss",
+                            "cross_metric",
+                            "mse_loss",
+                            "redundancy",
+                        )
+                    }
+                    lines.append(
+                        _fmt(
+                            "val",
+                            vm["total_loss"],
+                            vm["cross_metric"],
+                            vm["mse_loss"],
+                            vm["redundancy"],
+                        )
+                    )
+                print("\n".join(lines))
+
+            if schedulers is not None:
+                for sched in schedulers:
+                    sched.step()
 
         return history
 
@@ -579,9 +612,10 @@ class StructuralModel(nn.Module):
 
         if verbose:
             print(
-                f"Eval — loss: {metrics['total_loss']:.4f}  "
-                f"corr: {metrics['cross_metric']:.4f}  "
-                f"red: {metrics['redundancy']:.4f}"
+                f"Eval — loss↓: {metrics['total_loss']:.5f}  "
+                f"corr: {metrics['cross_metric']:.5f}  "
+                f"mse: {metrics['mse_loss']:.5f}  "
+                f"red: {metrics['redundancy']:.5f}"
             )
 
         return metrics

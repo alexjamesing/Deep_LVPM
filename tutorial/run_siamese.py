@@ -1,4 +1,3 @@
-####### Siamese Tutorial (PyTorch) — CIFAR-10 #########
 """
 Demonstrates the siamese mode of DLVPM on CIFAR-10:
 both views share the same CNN encoder (is_siamese=True).
@@ -15,12 +14,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision import datasets
-
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import LinearSVC
+from torchvision import datasets
 
 from deep_lvpm.model import StructuralModel
 
@@ -37,15 +35,15 @@ np.random.seed(SEED)
 train_ds = datasets.CIFAR10(root="/tmp/cifar10", train=True, download=True)
 test_ds = datasets.CIFAR10(root="/tmp/cifar10", train=False, download=True)
 
-x_train = np.array(train_ds.data, dtype="float32") / 255.0   # (50000, 32, 32, 3)
+x_train = np.array(train_ds.data, dtype="float32") / 255.0  # (50000, 32, 32, 3)
 y_train_cat = np.array(train_ds.targets)
 
-x_test = np.array(test_ds.data, dtype="float32") / 255.0     # (10000, 32, 32, 3)
+x_test = np.array(test_ds.data, dtype="float32") / 255.0  # (10000, 32, 32, 3)
 y_test_cat = np.array(test_ds.targets)
 
 # Convert HWC → CHW for PyTorch
-x_train = x_train.transpose(0, 3, 1, 2)   # (50000, 3, 32, 32)
-x_test = x_test.transpose(0, 3, 1, 2)     # (10000, 3, 32, 32)
+x_train = x_train.transpose(0, 3, 1, 2)  # (50000, 3, 32, 32)
+x_test = x_test.transpose(0, 3, 1, 2)  # (10000, 3, 32, 32)
 
 print(f"Train: {x_train.shape},  Test: {x_test.shape}")
 
@@ -53,6 +51,7 @@ print(f"Train: {x_train.shape},  Test: {x_test.shape}")
 # ------------------------------------------------------------------
 # Batch augmentation  (applied inside the encoder's forward())
 # ------------------------------------------------------------------
+
 
 def batch_augment(x: torch.Tensor) -> torch.Tensor:
     """Random crop + horizontal flip + grayscale on an (N, C, H, W) batch."""
@@ -77,6 +76,7 @@ def batch_augment(x: torch.Tensor) -> torch.Tensor:
 # Encoder architecture
 # ------------------------------------------------------------------
 
+
 class CIFAREncoder(nn.Module):
     """
     CNN encoder matching the keras3 siamese tutorial.
@@ -94,14 +94,14 @@ class CIFAREncoder(nn.Module):
         self.backbone = nn.Sequential(
             nn.Conv2d(3, 64, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(2),                            # → (64, 16, 16)
+            nn.MaxPool2d(2),  # → (64, 16, 16)
             nn.Conv2d(64, 128, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(2),                            # → (128, 8, 8)
+            nn.MaxPool2d(2),  # → (128, 8, 8)
             nn.Conv2d(128, 256, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d(1),                    # → (256, 1, 1)
-            nn.Flatten(),                               # → (256,)
+            nn.AdaptiveAvgPool2d(1),  # → (256, 1, 1)
+            nn.Flatten(),  # → (256,)
         )
         self.projector = nn.Sequential(
             nn.Linear(256, 512),
@@ -136,7 +136,7 @@ model_list = [encoder, encoder]
 Path = np.array([[0, 1], [1, 0]], dtype="float32")
 regularizer_list = [None, None]
 
-DLVPM_Siamese = StructuralModel(
+model = StructuralModel(
     Path,
     model_list,
     regularizer_list,
@@ -154,25 +154,27 @@ DLVPM_Siamese = StructuralModel(
 # receive independent stochastic augmentations inside encoder.forward().
 data_train_list = [x_train, x_train]
 
-DLVPM_Siamese.build(data_train_list)
-opt = torch.optim.Adam(DLVPM_Siamese.model_list[0].parameters(), lr=1e-4)
-DLVPM_Siamese.compile(optimizer=opt)
+model.build(data_train_list)
+opt = torch.optim.Adam(model.model_list[0].parameters(), lr=1e-4)
+model.compile(optimizer=opt)
 
-DLVPM_Siamese.fit(data_train_list, batch_size=batch_size, epochs=epochs, verbose=True)
+model.fit(data_train_list, batch_size=batch_size, epochs=epochs, verbose=True)
 
 # ------------------------------------------------------------------
 # Downstream evaluation: linear SVM on backbone features
 # ------------------------------------------------------------------
 # model_list[0] is nn.Sequential(CIFAREncoder, ZCALayer); [0][0] is the encoder.
-backbone = DLVPM_Siamese.model_list[0][0].backbone
+backbone = model.model_list[0][0].backbone
 
-DLVPM_Siamese.eval()
+model.eval()
 backbone.eval()
 
-device = DLVPM_Siamese.device
+device = model.device
 
 
-def extract_features(x_np: np.ndarray, model: nn.Module, batch: int = 256) -> np.ndarray:
+def extract_features(
+    x_np: np.ndarray, model: nn.Module, batch: int = 256
+) -> np.ndarray:
     chunks = []
     t = torch.as_tensor(x_np, dtype=torch.float32).to(device)
     with torch.no_grad():
@@ -186,10 +188,12 @@ test_feats = extract_features(x_test, backbone)
 
 print(f"Backbone features — train: {train_feats.shape},  test: {test_feats.shape}")
 
-svm_clf = Pipeline([
-    ("scaler", StandardScaler()),
-    ("svm", LinearSVC(C=1.0, max_iter=10000, random_state=42)),
-])
+svm_clf = Pipeline(
+    [
+        ("scaler", StandardScaler()),
+        ("svm", LinearSVC(C=1.0, max_iter=10000, random_state=42)),
+    ]
+)
 svm_clf.fit(train_feats, y_train_cat)
 predictions = svm_clf.predict(test_feats)
 accuracy = accuracy_score(y_test_cat, predictions)

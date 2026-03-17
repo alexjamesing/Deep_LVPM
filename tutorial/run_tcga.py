@@ -128,7 +128,7 @@ tot_num = rnaseq.shape[0]
 
 regularizer_list = [(0.001, 0.001)] * len(model_list)
 
-DLVPM_Structural_instance = StructuralModel(
+model = StructuralModel(
     Path,
     model_list,
     regularizer_list,
@@ -145,36 +145,28 @@ DLVPM_Structural_instance = StructuralModel(
 init_lr, final_lr = 1e-4, 1e-5
 gamma = (final_lr / init_lr) ** (1.0 / epochs)
 
-DLVPM_Structural_instance.build(X_arr)
-opt_list = [
-    torch.optim.Adam(m.parameters(), lr=init_lr)
-    for m in DLVPM_Structural_instance.model_list
-]
+model.build(X_arr)
+opt_list = [torch.optim.Adam(m.parameters(), lr=init_lr) for m in model.model_list]
 schedulers = [
     torch.optim.lr_scheduler.ExponentialLR(opt, gamma=gamma) for opt in opt_list
 ]
 
-DLVPM_Structural_instance.compile(optimizer=opt_list)
+model.compile(optimizer=opt_list)
 
 
 # ------------------------------------------------------------------
-# Training  (one epoch at a time so the LR scheduler steps each epoch)
+# Training
 # ------------------------------------------------------------------
 
-for epoch in range(epochs):
-    h = DLVPM_Structural_instance.fit(
-        X_arr, batch_size=batch_size, epochs=1, verbose=False
-    )
-    for sched in schedulers:
-        sched.step()
-    print(
-        f"Epoch {epoch + 1}/{epochs} — "
-        f"loss: {h['total_loss'][-1]:.4f}  "
-        f"corr: {h['cross_metric'][-1]:.4f}  "
-        f"red: {h['redundancy'][-1]:.4f}"
-    )
+model.fit(
+    X_list=X_arr,
+    batch_size=batch_size,
+    epochs=epochs,
+    verbose=True,
+    schedulers=schedulers,
+)
 
-mean_corr = DLVPM_Structural_instance.evaluate(X_arr)
+mean_corr = model.evaluate(X_arr)
 print(
     "The mean correlation between data-types connected by the path model "
     f"is r={mean_corr['cross_metric']:.4f}"
@@ -184,20 +176,20 @@ print(
 # ------------------------------------------------------------------
 # Test-set evaluation
 # ------------------------------------------------------------------
-mean_corr_test = DLVPM_Structural_instance.evaluate(X_arr_test)
+mean_corr_test = model.evaluate(X_arr_test)
 print(
     "Test set — mean correlation between connected data-types: "
     f"r={mean_corr_test['cross_metric']:.4f}"
 )
 
-test_DLVs = DLVPM_Structural_instance.predict(X_arr_test)
+test_DLVs = model.predict(X_arr_test)
 
 print("Correlations between first set of DLVs:")
 print(np.corrcoef(test_DLVs[:, 0, :].T))
 print("Correlations between second set of DLVs:")
 print(np.corrcoef(test_DLVs[:, 1, :].T))
 
-corr_mat = DLVPM_Structural_instance.calculate_corrmat(test_DLVs)
+corr_mat = model.calculate_corrmat(test_DLVs)
 
 data_names = ["Histology", "RNASeq", "miRNASeq", "Methylation", "SNVs"]
 

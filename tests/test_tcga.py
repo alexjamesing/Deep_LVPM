@@ -106,7 +106,7 @@ def run_tcga_quickstart(
 
     regularizer_list = [(3e-4, 3e-4)] * len(encoders)
 
-    structural_model = StructuralModel(
+    model = StructuralModel(
         Path=adjacency,
         model_list=encoders,
         regularizer_list=regularizer_list,
@@ -118,19 +118,17 @@ def run_tcga_quickstart(
         train_DLV=True,
     )
 
-    structural_model.build(train_views)
-    optimizers = [
-        torch.optim.Adam(m.parameters(), lr=5e-4) for m in structural_model.model_list
-    ]
-    structural_model.compile(optimizer=optimizers)
-    structural_model.fit(
+    model.build(train_views)
+    optimizers = [torch.optim.Adam(m.parameters(), lr=5e-4) for m in model.model_list]
+    model.compile(optimizer=optimizers)
+    model.fit(
         train_views,
         batch_size=batch_size,
         epochs=epochs,
         verbose=verbose,
     )
 
-    metrics = _evaluate_structural_model(structural_model, test_views)
+    metrics = _evaluate_structural_model(model, test_views)
     cross_val = metrics.get("cross_metric", metrics.get("metric_1"))
     redundancy = metrics.get("redundancy", metrics.get("metric_3"))
 

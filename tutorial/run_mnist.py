@@ -1,4 +1,3 @@
-####### MNIST Tutorial (PyTorch) #########
 """
 Demonstrates DLVPM on MNIST: associates image features (CNN encoder)
 with one-hot class labels using ZCA orthogonalisation.
@@ -6,9 +5,11 @@ with one-hot class labels using ZCA orthogonalisation.
 Requires: torchvision
 """
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
+from sklearn.manifold import TSNE
 from torchvision import datasets
 from torchvision import transforms as T
 
@@ -93,74 +94,67 @@ model_list = [cnn_model, label_model]
 Path = np.array([[0, 1], [1, 0]], dtype="float32")
 regularizer_list = [None, None]
 
-ndims = 9
-tot_num = x_train.shape[0]
-batch_size = 256
-epochs = 20
 
-DLVPM_Model = StructuralModel(
+model = StructuralModel(
     Path,
     model_list,
     regularizer_list,
-    tot_num,
-    ndims,
+    tot_num=x_train.shape[0],
+    ndims=9,
     orthogonalization="zca",
     train_DLV=False,
 )
 
-DLVPM_Model.build(data_train_list)
-opt_list = [torch.optim.Adam(m.parameters(), lr=1e-5) for m in DLVPM_Model.model_list]
-DLVPM_Model.compile(optimizer=opt_list)
+model.build(data_train_list)
+opt_list = [torch.optim.Adam(m.parameters(), lr=1e-5) for m in model.model_list]
+model.compile(optimizer=opt_list)
 
 # Match original validation_split=0.1
 val_cut = int(len(x_train) * 0.9)
 data_val_list = [x_train[val_cut:], y_train[val_cut:]]
 data_train_list = [x_train[:val_cut], y_train[:val_cut]]
 
-DLVPM_Model.fit(data_train_list, batch_size=batch_size, epochs=epochs, verbose=True,
-                validation_data=data_val_list)
+model.fit(
+    data_train_list,
+    batch_size=256,
+    epochs=20,
+    verbose=True,
+    validation_data=data_val_list,
+)
 
-metrics = DLVPM_Model.evaluate(data_test_list)
+metrics = model.evaluate(data_test_list)
 
-DLVs = DLVPM_Model.predict(data_test_list)
+DLVs = model.predict(data_test_list)
 
 Cmat1 = np.corrcoef(DLVs[:, 0, :].T)
 print("Correlation matrix (DLV 1):")
 print(Cmat1)
 
 image_DLVs = (
-    DLVPM_Model.model_list[0].predict([data_test_list[0]])
-    if hasattr(DLVPM_Model.model_list[0], "predict")
+    model.model_list[0].predict([data_test_list[0]])
+    if hasattr(model.model_list[0], "predict")
     else None
 )
 
 # t-SNE visualisation
-try:
-    import matplotlib.pyplot as plt
-    from sklearn.manifold import TSNE
+if image_DLVs is None:
+    # Obtain image DLVs manually
+    model.eval()
+    with torch.no_grad():
+        model.model_list[0].eval()
+        t = torch.as_tensor(data_test_list[0], dtype=torch.float32).to(model.device)
+        image_DLVs = model.model_list[0](t).cpu().numpy()
 
-    if image_DLVs is None:
-        # Obtain image DLVs manually
-        DLVPM_Model.eval()
-        with torch.no_grad():
-            DLVPM_Model.model_list[0].eval()
-            t = torch.as_tensor(data_test_list[0], dtype=torch.float32).to(
-                DLVPM_Model.device
-            )
-            image_DLVs = DLVPM_Model.model_list[0](t).cpu().numpy()
+rng = np.random.default_rng(42)
+idx = rng.choice(image_DLVs.shape[0], size=100, replace=False)
+tsne = TSNE(n_components=2, random_state=42)
+tsne_results = tsne.fit_transform(image_DLVs[idx])
 
-    rng = np.random.default_rng(42)
-    idx = rng.choice(image_DLVs.shape[0], size=100, replace=False)
-    tsne = TSNE(n_components=2, random_state=42)
-    tsne_results = tsne.fit_transform(image_DLVs[idx])
-
-    plt.figure(figsize=(12, 8))
-    y_sub = y_test[idx]
-    for i in range(y_sub.shape[1]):
-        pts = tsne_results[y_sub[:, i] == 1]
-        plt.scatter(pts[:, 0], pts[:, 1], label=f"Category {i + 1}")
-    plt.title("t-SNE projection of MNIST image DLVs")
-    plt.legend()
-    plt.show()
-except ImportError:
-    print("scikit-learn / matplotlib not available — skipping t-SNE plot.")
+plt.figure(figsize=(12, 8))
+y_sub = y_test[idx]
+for i in range(y_sub.shape[1]):
+    pts = tsne_results[y_sub[:, i] == 1]
+    plt.scatter(pts[:, 0], pts[:, 1], label=f"Category {i + 1}")
+plt.title("t-SNE projection of MNIST image DLVs")
+plt.legend()
+plt.show()
