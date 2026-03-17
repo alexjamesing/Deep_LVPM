@@ -5,8 +5,6 @@ PyTorch backend.  Trains residual encoders for each omics/imaging
 modality and plots inter-view correlation chord diagrams.
 """
 
-from importlib import resources
-
 import numpy as np
 import torch
 import torch.nn as nn
@@ -18,18 +16,23 @@ from deep_lvpm.plot import plot_correlation_chord_row
 # Data loading
 # ------------------------------------------------------------------
 
-with resources.as_file(
-    resources.files("deep_lvpm.data") / "Lung_multiomics_sample_train.npz"
-) as f:
-    arrays = np.load(f)
-    rnaseq = arrays["rnaseq"]
-    snv = arrays["snv"]
-    methylation = arrays["methylation"]
-    mirna = arrays["mirna"]
-    histo20 = arrays["histo20"]
-
+# train
+arrays = np.load("data/Lung_multiomics_sample_train.npz")
+rnaseq = arrays["rnaseq"]
+snv = arrays["snv"]
+methylation = arrays["methylation"]
+mirna = arrays["mirna"]
+histo20 = arrays["histo20"]
 X_arr = [histo20, rnaseq, methylation, mirna, snv]
 
+# test
+arrays = np.load("data/Lung_multiomics_sample_test.npz")
+rnaseq_test = arrays["rnaseq"]
+snv_test = arrays["snv"]
+methylation_test = arrays["methylation"]
+mirna_test = arrays["mirna"]
+histo20_test = arrays["histo20"]
+X_arr_test = [histo20_test, rnaseq_test, methylation_test, mirna_test, snv_test]
 
 # ------------------------------------------------------------------
 # Residual encoder (pure PyTorch nn.Module)
@@ -159,7 +162,9 @@ DLVPM_Structural_instance.compile(optimizer=opt_list)
 # ------------------------------------------------------------------
 
 for epoch in range(epochs):
-    h = DLVPM_Structural_instance.fit(X_arr, batch_size=batch_size, epochs=1, verbose=False)
+    h = DLVPM_Structural_instance.fit(
+        X_arr, batch_size=batch_size, epochs=1, verbose=False
+    )
     for sched in schedulers:
         sched.step()
     print(
@@ -179,19 +184,6 @@ print(
 # ------------------------------------------------------------------
 # Test-set evaluation
 # ------------------------------------------------------------------
-
-with resources.as_file(
-    resources.files("deep_lvpm.data") / "Lung_multiomics_sample_test.npz"
-) as f:
-    arrays = np.load(f)
-    rnaseq_test = arrays["rnaseq"]
-    snv_test = arrays["snv"]
-    methylation_test = arrays["methylation"]
-    mirna_test = arrays["mirna"]
-    histo20_test = arrays["histo20"]
-
-X_arr_test = [histo20_test, rnaseq_test, methylation_test, mirna_test, snv_test]
-
 mean_corr_test = DLVPM_Structural_instance.evaluate(X_arr_test)
 print(
     "Test set — mean correlation between connected data-types: "

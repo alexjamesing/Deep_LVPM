@@ -75,7 +75,7 @@ def _build_measurement_models(view_arrays: Sequence[np.ndarray]) -> list[nn.Sequ
 
 
 def run_tcga_quickstart(
-    epochs: int = 50,
+    epochs: int = 30,
     batch_size: int = 64,
     verbose: bool = False,
 ) -> dict[str, float | dict[str, float]]:

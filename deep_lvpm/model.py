@@ -299,7 +299,9 @@ class StructuralModel(nn.Module):
 
         # Run each sub-model directly to avoid a second organize_inputs_by_model
         # call that would happen inside self.forward().
-        raw_outputs = [self.model_list[v](inputs_nested[v]) for v in range(len(self.model_list))]
+        raw_outputs = [
+            self.model_list[v](inputs_nested[v]) for v in range(len(self.model_list))
+        ]
         y = torch.stack(raw_outputs, dim=2)
 
         y_dtype = y.dtype
@@ -314,11 +316,13 @@ class StructuralModel(nn.Module):
             factor_layer = self.model_list[v][-1]  # last element of Sequential
             layer_id = id(factor_layer)
             if layer_id not in seen_layers:
-                y_view = factor_layer.weight_normalizer(y_view, scale_fact, self.train_DLV)
+                y_view = factor_layer.weight_normalizer(
+                    y_view, scale_fact, self.train_DLV
+                )
                 seen_layers.add(layer_id)
             else:
                 # Siamese: weights already normalised; just re-normalise the output vector
-                y_denom = torch.sqrt(scale_fact * (y_view ** 2).sum(dim=0))
+                y_denom = torch.sqrt(scale_fact * (y_view**2).sum(dim=0))
                 y_view = y_view / y_denom
             y_list.append(y_view)
 
@@ -764,7 +768,7 @@ class StructuralModel(nn.Module):
         for dim in range(n_dims):
             x = DLVs[:, dim, :]  # (n_samples, n_views)
             x_centered = x - x.mean(dim=0)
-            std = x.std(dim=0) + eps          # unbiased std (divides by n-1)
+            std = x.std(dim=0) + eps  # unbiased std (divides by n-1)
             normalized = x_centered / std
             corr = (normalized.T @ normalized) / (n_samples - 1)  # unbiased Pearson
             corr_matrices.append(corr)

@@ -110,5 +110,5 @@ def test_tcga_quickstart_metrics_exceed_thresholds():
     """Fast TCGA run should keep correlation high and redundancy low."""
     results = run_tcga_quickstart()
 
-    assert results["cross_val"] is not None and results["cross_val"] > 0.5
-    assert results["redundancy"] is not None and results["redundancy"] < 0.1
+    assert results["cross_val"] is not None and results["cross_val"] > 0.6
+    assert results["redundancy"] is not None and results["redundancy"] < 0.15

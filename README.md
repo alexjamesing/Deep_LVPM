@@ -40,17 +40,17 @@ Three runnable tutorials are included:
 
 Associate MNIST images with digit labels.
 ```bash
-uv run -m deep_lvpm.tutorial.run_mnist
+uv run -m tutorial.run_mnist
 ```
 
 Integrate five TCGA lung cancer modalities.
 ```bash
-uv run -m deep_lvpm.tutorial.run_tcga
+uv run -m tutorial.run_tcga
 ```
 
 Demonstrate a Siamese encoder on CIFAR-10.
 ```bash
-uv run -m deep_lvpm.tutorial.run_siamese
+uv run -m tutorial.run_siamese
 ```
 
 All tutorials report the following metrics from `StructuralModel.evaluate`:
@@ -69,3 +69,7 @@ Run the test suite with:
 ```bash
 uv run -m tests.run_tests
 ```
+
+
+# TODO 
+- [ ] Update docs
