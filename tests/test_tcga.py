@@ -88,10 +88,10 @@ def run_tcga_quickstart(
     """
     train_arrays = _load_npz_arrays(TRAIN_FILE)
     test_arrays = _load_npz_arrays(TEST_FILE)
-    train_views = [train_arrays[key] for key in DATA_KEYS]
-    test_views = [test_arrays[key] for key in DATA_KEYS]
+    X_train = [train_arrays[key] for key in DATA_KEYS]
+    X_test = [test_arrays[key] for key in DATA_KEYS]
 
-    encoders = _build_measurement_models(train_views)
+    encoders = _build_measurement_models(X_train)
 
     adjacency = np.array(
         [
@@ -110,7 +110,7 @@ def run_tcga_quickstart(
         Path=adjacency,
         model_list=encoders,
         regularizer_list=regularizer_list,
-        tot_num=train_views[0].shape[0],
+        tot_num=X_train[0].shape[0],
         ndims=3,
         orthogonalization="Moore-Penrose",
         momentum=0.9,
@@ -118,17 +118,17 @@ def run_tcga_quickstart(
         train_DLV=True,
     )
 
-    model.build(train_views)
+    model.build(X_train)
     optimizers = [torch.optim.Adam(m.parameters(), lr=5e-4) for m in model.model_list]
     model.compile(optimizer=optimizers)
     model.fit(
-        train_views,
+        X_train,
         batch_size=batch_size,
         epochs=epochs,
         verbose=verbose,
     )
 
-    metrics = _evaluate_structural_model(model, test_views)
+    metrics = _evaluate_structural_model(model, X_test)
     cross_val = metrics.get("cross_metric", metrics.get("metric_1"))
     redundancy = metrics.get("redundancy", metrics.get("metric_3"))
 

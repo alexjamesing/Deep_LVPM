@@ -43,9 +43,19 @@ x_train, y_train, y_train_cat, x_test, y_test, y_test_cat = _load_mnist()
 print("x_train shape:", x_train.shape)
 print(f"{x_train.shape[0]} train samples, {x_test.shape[0]} test samples")
 
-X_train = [x_train, y_train]
+# X_train = [x_train, y_train]
 X_test = [x_test, y_test]
 
+# Shuffle data before validation split
+rng = np.random.default_rng(42)
+shuffle_idx = rng.permutation(len(x_train))
+x_train: np.ndarray = x_train[shuffle_idx]
+y_train: np.ndarray = y_train[shuffle_idx]
+
+# Match original validation_split=0.1
+val_cut = int(len(x_train) * 0.9)
+X_val: list[np.ndarray] = [x_train[val_cut:], y_train[val_cut:]]
+X_train: list[np.ndarray] = [x_train[:val_cut], y_train[:val_cut]]
 
 # ------------------------------------------------------------------
 # Measurement models
@@ -94,12 +104,11 @@ model_list = [cnn_model, label_model]
 Path = np.array([[0, 1], [1, 0]], dtype="float32")
 regularizer_list = [None, None]
 
-
 model = StructuralModel(
     Path,
     model_list,
     regularizer_list,
-    tot_num=x_train.shape[0],
+    tot_num=len(X_train[0]),
     ndims=9,
     orthogonalization="zca",
     train_DLV=False,
@@ -109,16 +118,6 @@ model.build(X_train)
 opt_list = [torch.optim.Adam(m.parameters(), lr=1e-5) for m in model.model_list]
 model.compile(optimizer=opt_list)
 
-# Shuffle data before validation split
-rng = np.random.default_rng(42)
-shuffle_idx = rng.permutation(len(x_train))
-x_train: np.ndarray = x_train[shuffle_idx]
-y_train: np.ndarray = y_train[shuffle_idx]
-
-# Match original validation_split=0.1
-val_cut = int(len(x_train) * 0.9)
-X_val: list[np.ndarray] = [x_train[val_cut:], y_train[val_cut:]]
-X_train: list[np.ndarray] = [x_train[:val_cut], y_train[:val_cut]]
 
 model.fit(
     X_train,

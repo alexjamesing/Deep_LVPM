@@ -437,7 +437,7 @@ class StructuralModel(nn.Module):
         batch_size: int = 32,
         epochs: int = 10,
         verbose: bool | int = True,
-        X_val=None | list,
+        X_val: list | None = None,
         schedulers: list | None = None,
     ) -> dict:
         """
