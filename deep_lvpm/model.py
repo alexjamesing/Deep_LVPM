@@ -177,6 +177,65 @@ class StructuralModel(nn.Module):
         return wrapped
 
     # ------------------------------------------------------------------
+    # Input validation helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _to_tensor_list(data: list, name: str = "data") -> list[torch.Tensor]:
+        """Convert a list of array-like to a list of float32 torch Tensors.
+
+        Accepts numpy arrays, existing torch tensors, or any object supported
+        by ``torch.as_tensor``.
+
+        Raises
+        ------
+        TypeError
+            If ``data`` is not a list, or if any element cannot be converted.
+        """
+        if not isinstance(data, list):
+            raise TypeError(
+                f"{name} must be a list of torch.Tensor (got {type(data).__name__})."
+            )
+        tensors: list[torch.Tensor] = []
+        for i, x in enumerate(data):
+            try:
+                t = torch.as_tensor(x, dtype=torch.float32)
+            except Exception as exc:
+                raise TypeError(
+                    f"{name}[{i}] cannot be converted to a torch.Tensor: {exc}"
+                ) from exc
+            tensors.append(t)
+        return tensors
+
+    @staticmethod
+    def _check_views_consistent(
+        X_train: list[torch.Tensor], X_val: list[torch.Tensor]
+    ) -> None:
+        """Validate that X_train and X_val are compatible.
+
+        Checks that both lists contain the same number of views and that
+        the feature dimensions (all axes except the sample axis) match for
+        each corresponding view.
+
+        Raises
+        ------
+        ValueError
+            If the number of views differs, or if any view has mismatched
+            feature dimensions.
+        """
+        if len(X_train) != len(X_val):
+            raise ValueError(
+                f"X_train and X_val must have the same number of views, "
+                f"got {len(X_train)} and {len(X_val)}."
+            )
+        for i, (tr, va) in enumerate(zip(X_train, X_val)):
+            if tr.shape[1:] != va.shape[1:]:
+                raise ValueError(
+                    f"X_train[{i}] and X_val[{i}] have incompatible feature "
+                    f"dimensions: {tuple(tr.shape[1:])} vs {tuple(va.shape[1:])}."
+                )
+
+    # ------------------------------------------------------------------
     # Input organisation
     # ------------------------------------------------------------------
 
@@ -215,16 +274,14 @@ class StructuralModel(nn.Module):
 
         Parameters
         ----------
-        X_list : list of array-like
-            One array per input tensor (same format as passed to ``fit``).
+        X_list : list of torch.Tensor
+            One tensor per input view (same format as passed to ``fit``).
         """
-        tensors = [
-            torch.as_tensor(np.asarray(x)[:2], dtype=torch.float32).to(self.device)
-            for x in X_list
-        ]
+        tensors = self._to_tensor_list(X_list, "X_list")
+        sample = [t[:2].to(self.device) for t in tensors]
         self.to(self.device)
         with torch.no_grad():
-            self.forward(tensors)
+            self.forward(sample)
 
     # ------------------------------------------------------------------
     # Compile
@@ -376,11 +433,11 @@ class StructuralModel(nn.Module):
 
     def fit(
         self,
-        X_list: list,
+        X_train: list,
         batch_size: int = 32,
         epochs: int = 10,
         verbose: bool | int = True,
-        validation_data=None,
+        X_val=None | list,
         schedulers: list | None = None,
     ) -> dict:
         """
@@ -388,15 +445,16 @@ class StructuralModel(nn.Module):
 
         Parameters
         ----------
-        X_list : list of array-like
-            One array per data view (numpy or tensor).
+        X_train
+            One float32 tensor per data view.
         batch_size : int
         epochs : int
         verbose : bool or int
             0 / False = silent; 1 / True = one line per epoch.
-        validation_data : list or None
-            If provided, evaluate on this data after each epoch and
-            include val metrics in the returned history.
+        X_val : list of torch.Tensor or None
+            If provided, must have the same number of views and matching
+            feature dimensions as X_train.  Evaluated after each epoch;
+            val metrics are included in the returned history.
 
         Returns
         -------
@@ -407,10 +465,14 @@ class StructuralModel(nn.Module):
         if self.optimizers is None:
             raise RuntimeError("Call compile(optimizer) before fit().")
 
+        X_train = self._to_tensor_list(X_train, "X_train")
+        if X_val is not None:
+            X_val = self._to_tensor_list(X_val, "X_val")
+            self._check_views_consistent(X_train, X_val)
+
         self.to(self.device)
 
-        tensors = [torch.as_tensor(x, dtype=torch.float32) for x in X_list]
-        dataset = TensorDataset(*tensors)
+        dataset = TensorDataset(*X_train)
         # drop_last=True prevents single-sample final batches that break BatchNorm
         loader = DataLoader(
             dataset, batch_size=batch_size, shuffle=True, drop_last=True
@@ -482,8 +544,8 @@ class StructuralModel(nn.Module):
             history["mse_loss"].append(epoch_metrics["mse"])
             history["redundancy"].append(epoch_metrics["red"])
 
-            if validation_data is not None:
-                val_metrics = self.evaluate(validation_data, verbose=False)
+            if X_val is not None:
+                val_metrics = self.evaluate(X_val, verbose=False)
                 for k, v in val_metrics.items():
                     history.setdefault(f"val_{k}", []).append(v)
 
@@ -507,7 +569,7 @@ class StructuralModel(nn.Module):
                         epoch_metrics["red"],
                     )
                 )
-                if validation_data is not None:
+                if X_val is not None:
                     vm = {
                         k: history[f"val_{k}"][-1]
                         for k in (
@@ -543,6 +605,12 @@ class StructuralModel(nn.Module):
         """
         Evaluate the model on a dataset.
 
+        Parameters
+        ----------
+        X_list : list of torch.Tensor
+            One float32 tensor per data view.  Numpy arrays are accepted
+            and will be converted automatically.
+
         Returns
         -------
         dict with keys ``total_loss``, ``cross_metric``, ``mse_loss``,
@@ -551,8 +619,8 @@ class StructuralModel(nn.Module):
         self.to(self.device)
         self.eval()
 
-        tensors = [torch.as_tensor(x, dtype=torch.float32) for x in X_list]
-        dataset = TensorDataset(*tensors)
+        X_list = self._to_tensor_list(X_list, "X_list")
+        dataset = TensorDataset(*X_list)
         loader = DataLoader(
             dataset, batch_size=batch_size, shuffle=False, drop_last=False
         )
@@ -628,6 +696,12 @@ class StructuralModel(nn.Module):
         """
         Run inference and return DLVs as a numpy array.
 
+        Parameters
+        ----------
+        X_list : list of torch.Tensor
+            One float32 tensor per data view.  Numpy arrays are accepted
+            and will be converted automatically.
+
         Returns
         -------
         np.ndarray, shape (n_samples, ndims, n_views)
@@ -635,8 +709,8 @@ class StructuralModel(nn.Module):
         self.to(self.device)
         self.eval()
 
-        tensors = [torch.as_tensor(x, dtype=torch.float32) for x in X_list]
-        dataset = TensorDataset(*tensors)
+        X_list = self._to_tensor_list(X_list, "X_list")
+        dataset = TensorDataset(*X_list)
         loader = DataLoader(
             dataset, batch_size=batch_size, shuffle=False, drop_last=False
         )

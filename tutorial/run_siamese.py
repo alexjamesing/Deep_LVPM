@@ -152,13 +152,18 @@ model = StructuralModel(
 
 # Pass x_train twice: both views share the same underlying images but
 # receive independent stochastic augmentations inside encoder.forward().
-data_train_list = [x_train, x_train]
+X_train = [x_train, x_train]
 
-model.build(data_train_list)
+model.build(X_train)
 opt = torch.optim.Adam(model.model_list[0].parameters(), lr=1e-4)
 model.compile(optimizer=opt)
 
-model.fit(data_train_list, batch_size=batch_size, epochs=epochs, verbose=True)
+model.fit(
+    X_train,
+    batch_size=batch_size,
+    epochs=epochs,
+    verbose=True,
+)
 
 # ------------------------------------------------------------------
 # Downstream evaluation: linear SVM on backbone features

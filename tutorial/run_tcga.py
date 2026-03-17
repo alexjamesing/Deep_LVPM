@@ -23,7 +23,7 @@ snv = arrays["snv"]
 methylation = arrays["methylation"]
 mirna = arrays["mirna"]
 histo20 = arrays["histo20"]
-X_arr = [histo20, rnaseq, methylation, mirna, snv]
+X_train = [histo20, rnaseq, methylation, mirna, snv]
 
 # test
 arrays = np.load("data/Lung_multiomics_sample_test.npz")
@@ -32,7 +32,7 @@ snv_test = arrays["snv"]
 methylation_test = arrays["methylation"]
 mirna_test = arrays["mirna"]
 histo20_test = arrays["histo20"]
-X_arr_test = [histo20_test, rnaseq_test, methylation_test, mirna_test, snv_test]
+X_val_test = [histo20_test, rnaseq_test, methylation_test, mirna_test, snv_test]
 
 # ------------------------------------------------------------------
 # Residual encoder (pure PyTorch nn.Module)
@@ -145,7 +145,7 @@ model = StructuralModel(
 init_lr, final_lr = 1e-4, 1e-5
 gamma = (final_lr / init_lr) ** (1.0 / epochs)
 
-model.build(X_arr)
+model.build(X_train)
 opt_list = [torch.optim.Adam(m.parameters(), lr=init_lr) for m in model.model_list]
 schedulers = [
     torch.optim.lr_scheduler.ExponentialLR(opt, gamma=gamma) for opt in opt_list
@@ -159,14 +159,15 @@ model.compile(optimizer=opt_list)
 # ------------------------------------------------------------------
 
 model.fit(
-    X_list=X_arr,
+    X_train=X_train,
     batch_size=batch_size,
     epochs=epochs,
     verbose=True,
     schedulers=schedulers,
+    X_val=X_val_test,
 )
 
-mean_corr = model.evaluate(X_arr)
+mean_corr = model.evaluate(X_train)
 print(
     "The mean correlation between data-types connected by the path model "
     f"is r={mean_corr['cross_metric']:.4f}"
@@ -176,13 +177,13 @@ print(
 # ------------------------------------------------------------------
 # Test-set evaluation
 # ------------------------------------------------------------------
-mean_corr_test = model.evaluate(X_arr_test)
+mean_corr_test = model.evaluate(X_val_test)
 print(
     "Test set — mean correlation between connected data-types: "
     f"r={mean_corr_test['cross_metric']:.4f}"
 )
 
-test_DLVs = model.predict(X_arr_test)
+test_DLVs = model.predict(X_val_test)
 
 print("Correlations between first set of DLVs:")
 print(np.corrcoef(test_DLVs[:, 0, :].T))

@@ -43,8 +43,8 @@ x_train, y_train, y_train_cat, x_test, y_test, y_test_cat = _load_mnist()
 print("x_train shape:", x_train.shape)
 print(f"{x_train.shape[0]} train samples, {x_test.shape[0]} test samples")
 
-data_train_list = [x_train, y_train]
-data_test_list = [x_test, y_test]
+X_train = [x_train, y_train]
+X_test = [x_test, y_test]
 
 
 # ------------------------------------------------------------------
@@ -105,33 +105,38 @@ model = StructuralModel(
     train_DLV=False,
 )
 
-model.build(data_train_list)
+model.build(X_train)
 opt_list = [torch.optim.Adam(m.parameters(), lr=1e-5) for m in model.model_list]
 model.compile(optimizer=opt_list)
 
+# Shuffle data before validation split
+rng = np.random.default_rng(42)
+shuffle_idx = rng.permutation(len(x_train))
+x_train: np.ndarray = x_train[shuffle_idx]
+y_train: np.ndarray = y_train[shuffle_idx]
+
 # Match original validation_split=0.1
 val_cut = int(len(x_train) * 0.9)
-data_val_list = [x_train[val_cut:], y_train[val_cut:]]
-data_train_list = [x_train[:val_cut], y_train[:val_cut]]
+X_val: list[np.ndarray] = [x_train[val_cut:], y_train[val_cut:]]
+X_train: list[np.ndarray] = [x_train[:val_cut], y_train[:val_cut]]
 
 model.fit(
-    data_train_list,
+    X_train,
     batch_size=256,
     epochs=20,
     verbose=True,
-    validation_data=data_val_list,
+    X_val=X_val,  # type: ignore
 )
 
-metrics = model.evaluate(data_test_list)
-
-DLVs = model.predict(data_test_list)
+metrics = model.evaluate(X_test)
+DLVs = model.predict(X_test)
 
 Cmat1 = np.corrcoef(DLVs[:, 0, :].T)
 print("Correlation matrix (DLV 1):")
 print(Cmat1)
 
 image_DLVs = (
-    model.model_list[0].predict([data_test_list[0]])
+    model.model_list[0].predict([X_test[0]])
     if hasattr(model.model_list[0], "predict")
     else None
 )
@@ -142,7 +147,7 @@ if image_DLVs is None:
     model.eval()
     with torch.no_grad():
         model.model_list[0].eval()
-        t = torch.as_tensor(data_test_list[0], dtype=torch.float32).to(model.device)
+        t = torch.as_tensor(X_test[0], dtype=torch.float32).to(model.device)
         image_DLVs = model.model_list[0](t).cpu().numpy()
 
 rng = np.random.default_rng(42)
