@@ -3,9 +3,39 @@
 """
 ZCALayer — pure PyTorch implementation.
 
-Alternative orthogonalisation layer using ZCA (Zero-phase Component
-Analysis) whitening instead of the Moore-Penrose approach in
-FactorLayer. Appended to each measurement model in StructuralModel.
+Algorithm
+---------
+``ZCALayer`` is appended to the end of each measurement model and produces
+``ndims`` DLVs from the model's output.  Unlike ``FactorLayer``, DLVs are
+produced by a single matrix projection followed by ZCA whitening applied
+*outside* this layer (in ``StructuralModel._weight_normaliser``).
+
+The computation inside this layer is:
+
+  1. Batch-normalize input X.
+  2. Project: Y = X W  where W ∈ ℝ^{n_features × ndims} is learned.
+
+ZCA whitening (``weight_normalizer``)
+--------------------------------------
+After the projection, ``StructuralModel._weight_normaliser`` calls
+``weight_normalizer``, which applies ZCA whitening to Y:
+
+  Y_white = Y · C^{-1/2}
+
+where C = Y^T Y is the within-batch (or moving) covariance of the projected
+output.  This enforces approximate orthogonality of the DLVs.  C^{-1/2} is
+computed via eigendecomposition (``_inv_sqrt_via_eigh``).
+
+A diagonal offset is added to C before inversion for numerical stability:
+
+  C^{-1/2} = (C + δI)^{-1/2}
+
+Moving covariance
+-----------------
+The layer accumulates a moving estimate of the projection covariance
+``moving_conv2 ≈ E[Y^T Y]`` during training.  When ``train_DLV=False``,
+``weight_normalizer`` uses this moving covariance instead of the current
+batch, making it suitable for stable test-time whitening.
 """
 
 import torch
@@ -13,24 +43,43 @@ import torch.nn as nn
 
 
 class ZCALayer(nn.Module):
-    """
-    Produces DLVs via linear projection followed by ZCA whitening.
+    """Orthogonalization layer implementing ZCA whitening.
 
-    Orthogonalisation is performed outside this layer as part of
-    StructuralModel (via ``weight_normalizer``), making the approach
-    more convenient than the sequential Gram-Schmidt used in
-    FactorLayer.
+    Appended automatically to each view's measurement model by
+    ``StructuralModel``.  Produces ``ndims`` DLVs from the measurement
+    model's output via a linear projection followed by ZCA whitening.
+
+    Unlike ``FactorLayer``, the orthogonalization happens outside this layer:
+    ``ZCALayer`` only performs batch normalization and the linear projection.
+    The ZCA whitening step is applied in ``weight_normalizer``, which is
+    called by ``StructuralModel._weight_normaliser`` at the end of pass 1.
 
     Attributes
     ----------
     kernel_regularizer : tuple (l1, l2) or None
+        L1/L2 regularization coefficients for the projection matrix W.
     epsilon : float
-    momentum : float  (Keras convention)
+        Numerical stability constant for batch normalization and the
+        eigendecomposition (eigenvalues are clamped to this value).
+    momentum : float
+        Momentum for the moving covariance estimate (Keras convention:
+        higher = slower update).  PyTorch BatchNorm1d uses ``1 - momentum``.
     diag_offset : float
-        Added to the diagonal of the covariance matrix to ensure
-        invertibility.
+        Diagonal regularization δ added to the covariance before inverting
+        (prevents singular matrices).
     tot_num : int
+        Total number of training samples; used to scale the batch covariance
+        to dataset scale (scale_fact = tot_num / batch_size).
     ndims : int
+        Number of DLVs to extract.
+    project : nn.Parameter
+        Trainable projection matrix W of shape ``(n_features, ndims)``.
+    moving_conv2 : torch.Tensor (buffer)
+        Moving estimate of Y^T Y, shape ``(ndims, ndims)``.  Initialized to
+        the identity so the first whitening step is a no-op.  Used in
+        ``weight_normalizer`` when ``train_DLV=False``.
+    run : torch.Tensor (buffer)
+        Counter incremented each time ``_update_moving_variables`` is called.
     """
 
     def __init__(
@@ -50,6 +99,7 @@ class ZCALayer(nn.Module):
         self.tot_num = tot_num
         self.ndims = ndims
         self._built = False
+        self._initialized: torch.Tensor
 
     # ------------------------------------------------------------------
     # Lazy build
@@ -69,7 +119,7 @@ class ZCALayer(nn.Module):
         self.project = nn.Parameter(torch.randn(input_dim, self.ndims))
 
         self.register_buffer("moving_conv2", torch.eye(self.ndims))
-        self.register_buffer("run", torch.zeros(()))
+        self.register_buffer("_initialized", torch.tensor(False))
 
         self._built = True
 
@@ -101,13 +151,15 @@ class ZCALayer(nn.Module):
     ) -> torch.Tensor:
         """Normalise projection weights; return ZCA-whitened DLVs."""
         with torch.no_grad():
-            denom = torch.sqrt(scale_fact * (y ** 2).sum(dim=0))
+            denom = torch.sqrt(scale_fact * (y**2).sum(dim=0))
             self.project.data.copy_(self.project / denom)
 
             if not train_DLV:
                 # Use moving average covariance
                 C = self.moving_conv2 + self.diag_offset * torch.eye(
-                    self.ndims, device=self.moving_conv2.device, dtype=self.moving_conv2.dtype
+                    self.ndims,
+                    device=self.moving_conv2.device,
+                    dtype=self.moving_conv2.dtype,
                 )
             else:
                 # Use batch-level covariance
@@ -137,17 +189,20 @@ class ZCALayer(nn.Module):
     # ------------------------------------------------------------------
 
     def _update_moving_variables(self, X: torch.Tensor) -> None:
-        scale_fact = float(self.tot_num) / float(X.shape[0])
-        y = X @ self.project
 
-        m = self.momentum
+        # training set size divided by batch size, used to scale covariance estimates
+        scale_fact = float(self.tot_num) / float(X.shape[0])
+
+        # Zero momentum on the first call
+        m = 0.0 if not self._initialized else self.momentum
         one_m = 1.0 - m
 
-        self.moving_conv2.copy_(
-            m * self.moving_conv2
-            + scale_fact * one_m * (y.T @ y)
-        )
-        self.run.copy_(self.run + 1.0)
+        y = X @ self.project
+        conv2_new = m * self.moving_conv2 + scale_fact * one_m * (y.T @ y)
+        self.moving_conv2.copy_(conv2_new)
+
+        # set flag after first update
+        self._initialized.fill_(True)
 
     # ------------------------------------------------------------------
     # Regularisation loss
@@ -165,5 +220,5 @@ class ZCALayer(nn.Module):
         if l1 > 0:
             penalty = penalty + l1 * self.project.abs().sum()
         if l2 > 0:
-            penalty = penalty + l2 * (self.project ** 2).sum()
+            penalty = penalty + l2 * (self.project**2).sum()
         return penalty

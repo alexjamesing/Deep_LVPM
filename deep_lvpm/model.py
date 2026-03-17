@@ -1,18 +1,47 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-StructuralModel — pure PyTorch implementation.
+StructuralModel — pure PyTorch implementation of Deep Latent Variable Path
+Modelling (Deep LVPM).
 
-A custom nn.Module that wraps a collection of per-view encoder
-networks and coordinates joint training to find orthogonal Deep Latent
-Variables (DLVs) that capture shared structure across heterogeneous
-data modalities.
+Algorithm overview
+------------------
+Given N data *views* (e.g. genomics, imaging, clinical), Deep LVPM learns a
+set of orthogonal deep latent variables (DLVs) that are maximally correlated
+across views as defined by a binary path matrix.
 
-The association structure between views is defined by a binary
-adjacency matrix (``Path``).
+Each view has:
+  - A user-supplied *measurement model* (any ``nn.Module``).
+  - An *orthogonalization layer* appended automatically by ``StructuralModel``.
+    This layer (``FactorLayer`` or ``ZCALayer``) enforces within-view DLV
+    orthogonality via iterative deflation or ZCA whitening respectively.
+
+Training loop (one batch)
+--------------------------
+Training is split into **two forward passes** so that each view can be updated
+independently with its own optimizer.
+
+  **Pass 1 — target generation (no gradients):**
+    All N measurement models are run to produce DLVs for every view.
+    The weight-normalizer rescales each DLV column to unit L2 norm (adjusted
+    for batch vs. dataset size).  The resulting tensor ``Y`` of shape
+    ``(batch, ndims, n_views)`` is used as a fixed regression target in pass 2.
+
+  **Pass 2 — per-view gradient update (one view at a time):**
+    For each view *i*:
+      a. Re-run view *i* with gradient tracking → ``y_pred [batch × ndims]``.
+      b. Compute MSE(y_pred, Y[:, :, j]) for every view *j* connected to *i*
+         by the path matrix.
+      c. Backpropagate through view *i*'s parameters only, using its own
+         optimizer.
+
+This two-pass design prevents gradient interference between views and makes it
+straightforward to assign different learning rates or regularizers per view.
 """
 
 from __future__ import annotations
+
+from typing import Union, cast
 
 import numpy as np
 import pydot
@@ -215,6 +244,12 @@ class StructuralModel(nn.Module):
         if isinstance(optimizer, list):
             self.optimizers = optimizer
         elif isinstance(optimizer, torch.optim.Optimizer):
+            if not self.is_siamese:
+                raise ValueError(
+                    "A single optimizer cannot be shared across views in non-siamese "
+                    "mode because each view has independent parameters with separate "
+                    "gradient steps. Pass a list of optimizers, one per view."
+                )
             self.optimizers = [optimizer] * len(self.model_list)
         else:
             raise ValueError(
@@ -228,13 +263,31 @@ class StructuralModel(nn.Module):
     def _normalize_pred(
         self, y_pred: torch.Tensor, scale_fact: torch.Tensor
     ) -> torch.Tensor:
+        """Scale y_pred so each DLV column has unit L2 norm.
+
+        ``scale_fact = tot_num / batch_size`` corrects for the fact that we
+        observe only a subset of the full dataset per batch, keeping the
+        normalisation consistent across different batch sizes.
+        """
         eps = torch.tensor(self.epsilon, dtype=y_pred.dtype, device=y_pred.device)
         denom = torch.sqrt(scale_fact) * torch.sqrt((y_pred**2).sum(dim=0) + eps)
         return y_pred / denom
 
-    def _weight_normaliser(self, inputs: list) -> tuple[torch.Tensor, torch.Tensor]:
+    def _weight_normaliser(
+        self, inputs: list
+    ) -> tuple[torch.Tensor, torch.Tensor, list]:
         """
-        Phase-1 forward pass: normalise projection weights.
+        Pass 1 — compute normalized DLVs for all views (no gradients).
+
+        Runs all measurement models, then calls each view's last layer's
+        ``weight_normalizer`` to rescale projection weights and DLV columns
+        to unit L2 norm.  The result ``Y`` is used as the fixed regression
+        target in pass 2.
+
+        Returns ``(y, scale_fact, inputs_nested)`` so the caller can reuse
+        the organised inputs for the per-view gradient steps without calling
+        ``organize_inputs_by_model`` a second time.
+
         Must be called inside ``torch.no_grad()``.
         """
         if self.train_DLV:
@@ -242,7 +295,12 @@ class StructuralModel(nn.Module):
         else:
             self.eval()
 
-        y = self.forward(inputs)
+        inputs_nested = self.organize_inputs_by_model(inputs)
+
+        # Run each sub-model directly to avoid a second organize_inputs_by_model
+        # call that would happen inside self.forward().
+        raw_outputs = [self.model_list[v](inputs_nested[v]) for v in range(len(self.model_list))]
+        y = torch.stack(raw_outputs, dim=2)
 
         y_dtype = y.dtype
         scale_fact = torch.tensor(
@@ -250,14 +308,22 @@ class StructuralModel(nn.Module):
         ) / torch.tensor(y.shape[0], dtype=y_dtype, device=y.device)
 
         y_list = []
+        seen_layers: set[int] = set()
         for v in range(len(self.model_list)):
             y_view = y[:, :, v]
             factor_layer = self.model_list[v][-1]  # last element of Sequential
-            y_view = factor_layer.weight_normalizer(y_view, scale_fact, self.train_DLV)
+            layer_id = id(factor_layer)
+            if layer_id not in seen_layers:
+                y_view = factor_layer.weight_normalizer(y_view, scale_fact, self.train_DLV)
+                seen_layers.add(layer_id)
+            else:
+                # Siamese: weights already normalised; just re-normalise the output vector
+                y_denom = torch.sqrt(scale_fact * (y_view ** 2).sum(dim=0))
+                y_view = y_view / y_denom
             y_list.append(y_view)
 
         y = torch.stack(y_list, dim=2)
-        return y, scale_fact
+        return y, scale_fact, inputs_nested
 
     def _step(
         self,
@@ -266,9 +332,20 @@ class StructuralModel(nn.Module):
         y: torch.Tensor,
         scale_fact: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Single-view forward + backward pass."""
+        """Pass 2 — single-view forward + backward pass.
+
+        Re-runs view *vie* with gradient tracking, computes MSE against the
+        fixed targets ``y`` (from pass 1), and updates this view's optimizer.
+        Only view *vie*'s parameters are updated; other views are unaffected.
+        """
         opt = self.optimizers[vie]
         model = self.model_list[vie]
+        if not isinstance(model, nn.Sequential):
+            raise TypeError(
+                f"model_list[{vie}] must be an nn.Sequential (got "
+                f"{type(model).__name__}). Use StructuralModel._add_dlvpm_layer() "
+                "to wrap your encoder before passing it to StructuralModel."
+            )
 
         opt.zero_grad()
 
@@ -277,7 +354,8 @@ class StructuralModel(nn.Module):
         y_pred = self._normalize_pred(y_pred, scale_fact)
         mse = self.mse_loss(y, y_pred, vie)
 
-        reg = model[-1].regularization_loss()
+        factor_layer = cast(Union[FactorLayer, ZCALayer], model[-1])
+        reg = factor_layer.regularization_loss()
         loss = mse + reg
 
         loss.backward()
@@ -362,10 +440,9 @@ class StructuralModel(nn.Module):
 
                 # Phase 1: weight normalisation (no gradient tracking)
                 with torch.no_grad():
-                    y, scale_fact = self._weight_normaliser(inputs)
+                    y, scale_fact, inputs_nested = self._weight_normaliser(inputs)
 
                 # Phase 2: per-view gradient updates
-                inputs_nested = self.organize_inputs_by_model(inputs)
                 view_losses, view_corrs, view_mses = [], [], []
 
                 for v in range(len(self.model_list)):
@@ -450,13 +527,18 @@ class StructuralModel(nn.Module):
             for batch_tensors in loader:
                 inputs = [t.to(self.device) for t in batch_tensors]
 
-                self.eval()
+                # Single forward pass in inference mode; the orthogonalization
+                # layers use their moving statistics (no batch normalization
+                # update), mirroring the Keras test_step.
                 y = self.forward(inputs)
 
                 inputs_nested = self.organize_inputs_by_model(inputs)
                 view_losses, view_corrs, view_mses = [], [], []
 
                 for v in range(len(self.model_list)):
+                    # y_pred is NOT re-normalized here — at test time the
+                    # FactorLayer already uses stable moving statistics, and
+                    # the Keras test_step also skips _normalize_pred.
                     y_pred = self.model_list[v](inputs_nested[v])
                     mse = self.mse_loss(y, y_pred, v)
                     reg = self.model_list[v][-1].regularization_loss()
@@ -540,19 +622,33 @@ class StructuralModel(nn.Module):
         y_pred: torch.Tensor,
         vie: int,
     ) -> torch.Tensor:
-        """
-        MSE between y_pred (view vie) and connected views in y_true.
+        """MSE between y_pred and each view connected to *vie* by the path matrix.
 
-        y_true : (batch, ndims, n_views)
-        y_pred : (batch, ndims)
+        Only view pairs with ``Path[vie, j] == 1`` contribute to the loss, so
+        the path matrix directly controls which cross-view correlations are
+        optimized.
+
+        Parameters
+        ----------
+        y_true : Tensor, shape (batch, ndims, n_views)
+            All views' normalized DLVs from pass 1.
+        y_pred : Tensor, shape (batch, ndims)
+            Predicted DLVs for view *vie* from pass 2.
+        vie : int
+            Index of the view being updated.
+
+        Returns
+        -------
+        Scalar loss tensor (½ · sum of masked per-element MSE).
         """
         y_pred_exp = y_pred.unsqueeze(2)  # (batch, ndims, 1)
         se_mean = ((y_true - y_pred_exp) ** 2).mean(dim=0)  # (ndims, n_views)
 
+        # Zero out pairs not connected in the path matrix.
         mask = self.Path[vie, :].to(se_mean.dtype)  # (n_views,)
         se_mean_masked = se_mean * mask.unsqueeze(0)  # (ndims, n_views)
 
-        return se_mean_masked.sum() / 2.0
+        return se_mean_masked.sum() / 2.0  # 0.5 factor — gradient of ½‖e‖²
 
     def corr_metric(
         self,
@@ -560,9 +656,24 @@ class StructuralModel(nn.Module):
         y_pred: torch.Tensor,
         vie: int,
     ) -> torch.Tensor:
-        """Mean correlation between y_pred (view vie) and connected views."""
+        """Mean Pearson correlation between y_pred and all views connected to *vie*.
+
+        Parameters
+        ----------
+        y_true : Tensor, shape (batch, ndims, n_views)
+            All views' DLVs.
+        y_pred : Tensor, shape (batch, ndims)
+            Predicted DLVs for view *vie*.
+        vie : int
+            Index of the view being evaluated.
+
+        Returns
+        -------
+        Scalar correlation tensor averaged over connected DLV pairs.
+        """
         eps = torch.tensor(self.epsilon, dtype=y_true.dtype, device=y_true.device)
 
+        # Mean-center before computing correlation.
         y_true_c = y_true - y_true.mean(dim=0)
         y_pred_c = y_pred - y_pred.mean(dim=0)
 
@@ -585,7 +696,24 @@ class StructuralModel(nn.Module):
     def calculate_redundancy(
         self, Y: torch.Tensor, epsilon: float = 1e-8
     ) -> torch.Tensor:
-        """Mean |corr(i, j)| over all off-diagonal pairs in Y columns."""
+        """Mean absolute off-diagonal Pearson correlation within one view.
+
+        A low redundancy indicates that the DLVs are approximately orthogonal
+        to one another — i.e. the orthogonalization layers are working as
+        intended.  Values consistently above 0.3 suggest a problem with the
+        orthogonalization.
+
+        Parameters
+        ----------
+        Y : Tensor, shape (batch, ndims)
+            DLV tensor for a single view.
+        epsilon : float
+            Small constant for numerical stability.
+
+        Returns
+        -------
+        Scalar tensor in [0, 1].
+        """
         Y = Y.float()
         col_mean = Y.mean(dim=0, keepdim=True)
         Yc = Y - col_mean
@@ -636,9 +764,9 @@ class StructuralModel(nn.Module):
         for dim in range(n_dims):
             x = DLVs[:, dim, :]  # (n_samples, n_views)
             x_centered = x - x.mean(dim=0)
-            std = x.std(dim=0) + eps
+            std = x.std(dim=0) + eps          # unbiased std (divides by n-1)
             normalized = x_centered / std
-            corr = (normalized.T @ normalized) / n_samples
+            corr = (normalized.T @ normalized) / (n_samples - 1)  # unbiased Pearson
             corr_matrices.append(corr)
 
         return corr_matrices
@@ -662,6 +790,7 @@ class StructuralModel(nn.Module):
                     "train_DLV": self.train_DLV,
                     "is_siamese": self.is_siamese,
                     "diag_offset": self.diag_offset,
+                    "regularizer_list": self.regularizer_list,
                 },
             },
             path,

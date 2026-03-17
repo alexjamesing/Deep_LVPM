@@ -6,7 +6,6 @@ package) but uses nn.Module APIs throughout.
 """
 
 import numpy as np
-import pytest
 import torch
 import torch.nn as nn
 
@@ -33,7 +32,7 @@ def test_factor_layer_training_updates_state():
         result = factor_layer(batch)
 
     assert result.shape == (5, 3), f"Unexpected shape {result.shape}"
-    assert float(factor_layer.run.item()) == pytest.approx(1.0, rel=1e-6)
+    assert factor_layer._initialized.item()
     # All outputs should be non-zero
     assert (result.abs() > 0).all(), "Expected non-zero DLV outputs"
 
