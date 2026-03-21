@@ -9,13 +9,14 @@ are averaged across the five captions for each image.
 Prerequisites
 -------------
 
-Install :mod:`deep_lvpm` with TensorFlow and the COCO tutorial extra dependencies.
+Install :mod:`deep_lvpm` with TensorFlow. The COCO tutorial dependencies are
+installed by default.
 Set the backend before running the script.
 
 .. code-block:: bash
 
    export KERAS_BACKEND=tensorflow
-   pip install -e ".[tf-cpu,tutorial-coco]"
+   pip install -e ".[tf-cpu]"
 
 1. Imports and configuration
 ----------------------------
@@ -175,27 +176,25 @@ CLIP, and VICReg with the same COCO pipeline and compares cross-modal retrieval 
 Benchmark task definition
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-For each image in a held-out set, retrieve its matching captions from a pool of
-all captions (image-to-text retrieval, abbreviated ``i2t``), and also retrieve
-the matching image given each caption (text-to-image retrieval, ``t2i``). The
-script averages retrieval accuracy across the five captions attached to each
-image, so the benchmark measures true COCO caption retrieval rather than
-single-caption matching.
+For each image in a held-out set, retrieve its matching five-caption group from
+a pool of caption groups (image-to-group retrieval, abbreviated ``i2g``), and
+also retrieve the matching image given the aggregated caption group
+(``g2i``). The script aggregates the five caption embeddings for each image
+into one caption-group embedding before ranking, so the benchmark measures
+whether a method links the image and caption set as a whole.
 
 Metrics:
 
-1. ``Recall@K`` (``i2t_R@K`` and ``t2i_R@K``) reports caption-averaged retrieval
-   success. ``i2t_R@1 = 0.45`` means that, on average, 45% of the five ground-truth
-   captions per image are ranked first. ``t2i_R@10`` reports how often each caption
-   retrieves its paired image in the top 10, averaged over the five captions linked
-   to every image.
-2. Median rank is computed from the mean rank across the five captions associated
-   with each image. Lower values indicate that matched image/caption groups appear
-   nearer the top of the ranked list.
+1. ``Top-K`` group accuracy (``i2g_topK`` and ``g2i_topK``) reports whether the
+   correct caption group or image is retrieved within the top ``K`` ranked
+   candidates. ``i2g_top1 = 0.45`` means 45% of images retrieve the correct
+   caption group as their first-ranked match.
+2. Median rank is computed directly on group-level ranks. Lower values indicate
+   that matched image/caption groups appear nearer the top of the ranked list.
 
-Higher Recall@K and lower median rank both indicate better cross-modal retrieval
-performance. Reporting both numbers provides a quick way to compare precision at
-strict cutoffs (Recall@K) as well as the overall ordering quality (median rank).
+Higher Top-K accuracy and lower median rank both indicate better cross-modal
+retrieval performance. Reporting both numbers provides a quick way to compare
+strict matching quality and overall ordering quality.
 
 Benchmark configuration (in script)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -209,7 +208,7 @@ Benchmark configuration (in script)
    RETRIEVAL_KS = (1, 5, 10)
 
 These knobs determine how many COCO samples are used for training/validation/testing
-the benchmark models and which Recall@K cutoffs are reported.
+the benchmark models and which Top-K cutoffs are reported.
 
 Implementation in the tutorial
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -220,8 +219,9 @@ The script performs the benchmark by:
 2. Training DLVPM, CLIP, and VICReg for the same number of epochs.
 3. Collecting image embeddings plus all five caption embeddings from each trained model.
 4. L2-normalising embeddings.
-5. Computing cosine similarity between all image-text pairs.
-6. Reporting ``i2t_R@K``, ``t2i_R@K``, and median ranks in a comparison table.
+5. Aggregating each five-caption set into one normalized caption-group embedding.
+6. Computing cosine similarity between images and caption groups.
+7. Reporting ``i2g_topK``, ``g2i_topK``, and median ranks in a comparison table.
 
 .. code-block:: python
 
@@ -255,32 +255,29 @@ The script performs the benchmark by:
    benchmark_results["VICReg"] = retrieval_metrics(vic_img, vic_txt)
 
    # Compute and print retrieval metrics table
-   header = ["Method", "i2t_R@1", "t2i_R@1", ...]
+   header = ["Method", "i2g_top1", "g2i_top1", ...]
    ...
 
 .. code-block:: python
 
    def retrieval_metrics(image_embeddings, text_embeddings, ks=(1, 5, 10)):
        image_embeddings = l2_normalize(image_embeddings.astype("float32"))
-       text_embeddings = l2_normalize(text_embeddings.astype("float32"))
-       flat_text_embeddings = text_embeddings.reshape(
-           image_embeddings.shape[0] * NUM_CAPTION_VIEWS, -1
-       )
-       caption_owner = np.repeat(np.arange(image_embeddings.shape[0]), NUM_CAPTION_VIEWS)
+       group_embeddings = aggregate_caption_groups(text_embeddings.astype("float32"))
+       group_similarity = image_embeddings @ group_embeddings.T
+       target_index = np.arange(image_embeddings.shape[0])
 
-       i2t_order = np.argsort(-(image_embeddings @ flat_text_embeddings.T), axis=1)
-       i2t_positive_mask = caption_owner[i2t_order] == np.arange(image_embeddings.shape[0])[:, None]
-       i2t_rank = np.where(i2t_positive_mask)[1].reshape(-1, NUM_CAPTION_VIEWS) + 1
+       i2g_order = np.argsort(-group_similarity, axis=1)
+       i2g_rank = np.argmax(i2g_order == target_index[:, None], axis=1) + 1
 
-       t2i_order = np.argsort(-(flat_text_embeddings @ image_embeddings.T), axis=1)
-       t2i_rank = np.argmax(t2i_order == caption_owner[:, None], axis=1).reshape(-1, NUM_CAPTION_VIEWS) + 1
+       g2i_order = np.argsort(-group_similarity.T, axis=1)
+       g2i_rank = np.argmax(g2i_order == target_index[:, None], axis=1) + 1
 
        metrics = {}
        for k in ks:
-           metrics[f"i2t_R@{k}"] = float(np.mean(np.mean(i2t_rank <= k, axis=1)))
-           metrics[f"t2i_R@{k}"] = float(np.mean(np.mean(t2i_rank <= k, axis=1)))
-       metrics["i2t_median_rank"] = float(np.median(np.mean(i2t_rank, axis=1)))
-       metrics["t2i_median_rank"] = float(np.median(np.mean(t2i_rank, axis=1)))
+           metrics[f"i2g_top{k}"] = float(np.mean(i2g_rank <= k))
+           metrics[f"g2i_top{k}"] = float(np.mean(g2i_rank <= k))
+       metrics["i2g_median_rank"] = float(np.median(i2g_rank))
+       metrics["g2i_median_rank"] = float(np.median(g2i_rank))
        return metrics
 
 The benchmark section is implemented directly in

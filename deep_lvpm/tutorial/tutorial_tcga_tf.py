@@ -96,7 +96,7 @@ batch_size  = 256
 epochs      = 500
 total_steps = int(rnaseq.shape[0] / batch_size) * epochs
 
-init_lr, final_lr = 1e-4, 1e-5
+init_lr, final_lr = 1e-5, 1e-5
 
 lr_schedule = optimizers.schedules.ExponentialDecay(
     initial_learning_rate=init_lr,
@@ -116,9 +116,8 @@ structural_kwargs = dict(
     diag_offset=1e-6,
     momentum=0.95,
     # sparse_l1_list=[1e-4] * len(view_models),
-    regularizer_list=[None] * len(view_models)
-    # order=True,
-    # order_every='end'
+    regularizer_list=[None] * len(view_models),
+    order=True
 )
 
 # Build StructuralModel directly and train for 200 epochs
@@ -241,8 +240,7 @@ print(np.corrcoef(test_DLVs[:,1,:].T))
 
 corr_mat = best_model.calculate_corrmat(test_DLVs) # This outputs correlation matrices between different data types included in the model
 
-corrmean = [np.mean(a) for a in corr_mat]
-
+corrmean = [keras.ops.mean(a) for a in corr_mat]
 print(corrmean)
 
 from deep_lvpm.plot import plot_correlation_chord_row

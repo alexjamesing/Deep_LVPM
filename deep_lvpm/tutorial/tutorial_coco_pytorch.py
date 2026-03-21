@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-MS COCO image-caption retrieval benchmark on the Keras TensorFlow backend.
+MS COCO image-caption retrieval benchmark on the Keras torch backend.
 """
 
 import os
@@ -11,22 +11,34 @@ import random
 import zipfile
 from collections import defaultdict
 
-os.environ.setdefault("KERAS_BACKEND", "tensorflow")
-os.environ.setdefault("USE_TF", "1")
-os.environ.setdefault("USE_TORCH", "0")
+os.environ.setdefault("KERAS_BACKEND", "torch")
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("USE_TORCH", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 try:
-    import tensorflow as tf
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, Dataset
 except Exception as exc:
     raise RuntimeError(
-        "This tutorial uses the Keras TensorFlow backend. Install it with: "
-        "python -m pip install -e '.[tf-apple]'"
+        "This tutorial now uses the Keras torch backend. Install it with: "
+        "python -m pip install -e '.[torch-apple]'"
     ) from exc
 
 import numpy as np
+from PIL import Image
 import keras
-from keras import layers, ops
+from keras import layers
+
+try:
+    from transformers import AutoModel, AutoTokenizer
+except Exception as exc:
+    raise RuntimeError(
+        "This tutorial now uses Hugging Face Transformers on the torch backend. "
+        "Install it with: python -m pip install 'transformers<5'"
+    ) from exc
 
 try:
     import fiftyone as fo
@@ -41,13 +53,16 @@ from deep_lvpm.multi_model import CLIP, VICReg
 from deep_lvpm.plot import plot_correlation_chord_row
 
 
-if keras.backend.backend() != "tensorflow":
+if keras.backend.backend() != "torch":
     raise RuntimeError(
-        "Keras did not start with the TensorFlow backend. Re-run this script with "
-        "KERAS_BACKEND=tensorflow."
+        "Keras did not start with the torch backend. Re-run this script with "
+        "KERAS_BACKEND=torch."
     )
 
 
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
 def env_int(name: str, default: int) -> int:
     value = os.environ.get(name)
     return default if value is None else int(value)
@@ -56,19 +71,15 @@ def env_int(name: str, default: int) -> int:
 NUM_CAPTION_VIEWS = 5
 IMG_SIZE = 224
 MAX_TOKENS = 32
-VOCAB_SIZE = 30000
-EMBED_DIM = 256
-TRANSFORMER_HEADS = 4
-TRANSFORMER_FF_DIM = 512
-NUM_TRANSFORMER_BLOCKS = 2
+TEXT_MODEL_NAME = os.environ.get("DLVPM_COCO_TEXT_MODEL", "distilbert-base-uncased")
 TEXT_DROPOUT = 0.10
-NDIMS = env_int("DLVPM_COCO_NDIMS", 32)
+NUM_WORKERS = env_int("DLVPM_COCO_NUM_WORKERS", 0)
+NDIMS = env_int("DLVPM_COCO_NDIMS", 256)
 BATCH_SIZE = env_int("DLVPM_COCO_BATCH_SIZE", 512)
-ORTHOG_WEIGHT = 1e-2
-LEARNING_RATE_START = 1e-4
+LEARNING_RATE_START = 1e-5
 LEARNING_RATE_END = 1e-4
-LEARNING_RATE_WARMUP_EPOCHS = 0
-BENCHMARK_EPOCHS = env_int("DLVPM_COCO_EPOCHS", 100)
+LEARNING_RATE_WARMUP_EPOCHS = 5
+BENCHMARK_EPOCHS = env_int("DLVPM_COCO_EPOCHS", 30)
 BENCHMARK_TRAIN_SAMPLES = env_int("DLVPM_COCO_TRAIN_SAMPLES", 20000)
 BENCHMARK_VAL_SAMPLES = env_int("DLVPM_COCO_VAL_SAMPLES", 5000)
 BENCHMARK_SAMPLES = env_int("DLVPM_COCO_TEST_SAMPLES", 2048)
@@ -76,6 +87,7 @@ RUN_BASELINES = False
 RETRIEVAL_KS = (1, 5, 10)
 
 N_VIEWS = NUM_CAPTION_VIEWS + 1
+# Path = np.ones((N_VIEWS, N_VIEWS), dtype="float32") - np.eye(N_VIEWS, dtype="float32")
 
 Path = np.array(
     [
@@ -89,9 +101,10 @@ Path = np.array(
     dtype="float32",
 )
 
+
+
 TEST_FRACTION = 0.10
 SEED = 51
-AUTOTUNE = tf.data.AUTOTUNE
 
 FO_TRAIN_SPLIT = "train"
 FO_VAL_SPLIT = "validation"
@@ -107,22 +120,24 @@ COCO_CAPTIONS_CACHE_SUBDIR = "deep_lvpm/coco"
 COCO_CAPTIONS_DIR = os.environ.get("COCO_CAPTIONS_DIR")
 
 
+# -----------------------------------------------------------------------------
+# Runtime setup
+# -----------------------------------------------------------------------------
 random.seed(SEED)
 np.random.seed(SEED)
-tf.random.set_seed(SEED)
+torch.manual_seed(SEED)
 
-for device in tf.config.list_physical_devices("GPU"):
-    try:
-        tf.config.experimental.set_memory_growth(device, True)
-    except Exception:
-        pass
-
-if tf.config.list_physical_devices("GPU"):
-    print("Using TensorFlow GPU backend.")
+if torch.backends.mps.is_available():
+    print("Using PyTorch MPS backend.")
+elif torch.cuda.is_available():
+    print("Using PyTorch CUDA backend.")
 else:
-    print("Using TensorFlow CPU backend.")
+    print("Using PyTorch CPU backend.")
 
 
+# -----------------------------------------------------------------------------
+# 1. Load MS COCO from FiftyOne Zoo
+# -----------------------------------------------------------------------------
 print("Loading MS COCO train and validation splits with FiftyOne...")
 
 train_view = foz.load_zoo_dataset(
@@ -150,7 +165,11 @@ val_view = foz.load_zoo_dataset(
 )
 
 
+# -----------------------------------------------------------------------------
+# 2. Load COCO captions and link each image to five captions
+# -----------------------------------------------------------------------------
 def resolve_coco_caption_annotations(split: str) -> str:
+    """Return the local path to the official COCO caption annotations JSON."""
     split_name = "train" if split == FO_TRAIN_SPLIT else "val"
     annotation_name = f"captions_{split_name}2017.json"
 
@@ -206,6 +225,7 @@ def resolve_coco_caption_annotations(split: str) -> str:
 
 
 def load_coco_captions(annotation_path: str) -> dict[int, list[str]]:
+    """Load official COCO captions keyed by image id."""
     with open(annotation_path, "r", encoding="utf-8") as file_obj:
         payload = json.load(file_obj)
 
@@ -227,6 +247,7 @@ def load_coco_captions(annotation_path: str) -> dict[int, list[str]]:
 
 
 def extract_coco_image_id(sample: "fo.Sample") -> int | None:
+    """Resolve a COCO image id from a FiftyOne sample."""
     try:
         coco_id = sample.get_field("coco_id")
     except Exception:
@@ -246,6 +267,7 @@ def coco_view_to_examples(
     dataset: "fo.Dataset",
     captions_by_image_id: dict[int, list[str]],
 ) -> tuple[list[str], list[list[str]]]:
+    """Return image paths and five human captions per image."""
     image_paths: list[str] = []
     caption_sets: list[list[str]] = []
     skipped_missing_ids = 0
@@ -290,18 +312,30 @@ def coco_view_to_examples(
     return image_paths, caption_sets
 
 
-train_caption_annotations = load_coco_captions(resolve_coco_caption_annotations(FO_TRAIN_SPLIT))
-val_caption_annotations = load_coco_captions(resolve_coco_caption_annotations(FO_VAL_SPLIT))
+train_caption_annotations = load_coco_captions(
+    resolve_coco_caption_annotations(FO_TRAIN_SPLIT)
+)
+val_caption_annotations = load_coco_captions(
+    resolve_coco_caption_annotations(FO_VAL_SPLIT)
+)
 
-train_paths_all, train_caption_sets_all = coco_view_to_examples(train_view, train_caption_annotations)
-val_paths, val_caption_sets = coco_view_to_examples(val_view, val_caption_annotations)
+train_paths_all, train_caption_sets_all = coco_view_to_examples(
+    train_view,
+    train_caption_annotations,
+)
+val_paths, val_caption_sets = coco_view_to_examples(
+    val_view,
+    val_caption_annotations,
+)
 
 if len(train_paths_all) == 0:
     raise RuntimeError("No training samples with five COCO captions were found.")
 if len(val_paths) == 0:
     raise RuntimeError("No validation samples with five COCO captions were found.")
 if len(train_paths_all) < 2:
-    raise RuntimeError("Need at least two training samples to create train/test splits.")
+    raise RuntimeError(
+        "Need at least two training samples to create train/test splits."
+    )
 
 rng = np.random.default_rng(SEED)
 perm = rng.permutation(len(train_paths_all))
@@ -321,89 +355,264 @@ print(f"Test samples (held-out train subset): {len(test_paths)}")
 print(f"Captions per image: {NUM_CAPTION_VIEWS}")
 
 
-text_vectorizer = layers.TextVectorization(
-    max_tokens=VOCAB_SIZE,
-    output_mode="count",
-    pad_to_max_tokens=True,
-    standardize="lower_and_strip_punctuation",
-)
+# -----------------------------------------------------------------------------
+# 3. Tokenize captions with a pretrained Hugging Face tokenizer
+# -----------------------------------------------------------------------------
+RESAMPLE_BICUBIC = Image.Resampling.BICUBIC if hasattr(Image, "Resampling") else Image.BICUBIC
+text_tokenizer = AutoTokenizer.from_pretrained(TEXT_MODEL_NAME, use_fast=True)
 
-train_captions_flat = np.asarray(train_caption_sets, dtype=str).reshape(-1)
-caption_ds = tf.data.Dataset.from_tensor_slices(train_captions_flat)
-caption_ds = caption_ds.shuffle(len(train_captions_flat), seed=SEED)
-caption_ds = caption_ds.batch(1024).prefetch(AUTOTUNE)
-text_vectorizer.adapt(caption_ds)
 
-def build_image_encoder(ndims: int) -> keras.Model:
+def tokenize_caption_sets(caption_sets: list[list[str]]) -> tuple[np.ndarray, np.ndarray]:
+    """Tokenize the five captions per image once up front."""
+    flat_captions = np.asarray(caption_sets, dtype=object).reshape(-1).tolist()
+    encoded = text_tokenizer(
+        flat_captions,
+        padding="max_length",
+        truncation=True,
+        max_length=MAX_TOKENS,
+        return_tensors="np",
+    )
+    token_ids = encoded["input_ids"].astype("int32").reshape(-1, NUM_CAPTION_VIEWS, MAX_TOKENS)
+    attention_mask = encoded["attention_mask"].astype("int32").reshape(
+        -1,
+        NUM_CAPTION_VIEWS,
+        MAX_TOKENS,
+    )
+    return token_ids, attention_mask
+
+
+# -----------------------------------------------------------------------------
+# 4. Torch-backed measurement models
+# -----------------------------------------------------------------------------
+class TorchModuleLayer(keras.layers.Layer):
+    """Wrap a PyTorch module for execution inside a Keras torch-backend model."""
+
+    def __init__(self, torch_module: nn.Module, input_dtype="float32", **kwargs):
+        super().__init__(**kwargs)
+        self.torch_module = torch_module
+        self.input_dtype_spec = input_dtype
+        self._feature_dim: int | None = None
+        self._current_device: str | None = None
+
+    def _flatten(self, tensor: torch.Tensor) -> torch.Tensor:
+        return torch.flatten(tensor, start_dim=1) if tensor.ndim > 2 else tensor
+
+    def _torch_dtype(self, dtype_name: str) -> torch.dtype:
+        if dtype_name in ("int32", "int64"):
+            return torch.long
+        return torch.float32
+
+    def _normalize_input_specs(self, value):
+        if isinstance(value, (list, tuple)) and value and isinstance(value[0], (list, tuple)):
+            return list(value)
+        return [value]
+
+    def _normalize_input_dtypes(self, count: int) -> list[str]:
+        if isinstance(self.input_dtype_spec, (list, tuple)):
+            if len(self.input_dtype_spec) != count:
+                raise ValueError(
+                    f"Expected {count} input dtypes, received {len(self.input_dtype_spec)}."
+                )
+            return list(self.input_dtype_spec)
+        return [self.input_dtype_spec for _ in range(count)]
+
+    def build(self, input_shape):
+        device = torch.device("cpu")
+        self.torch_module.to(device)
+        input_shapes = self._normalize_input_specs(input_shape)
+        input_dtypes = self._normalize_input_dtypes(len(input_shapes))
+        dummy_inputs = []
+        for shape, dtype_name in zip(input_shapes, input_dtypes):
+            dummy_shape = [2]
+            for dim in shape[1:]:
+                dummy_shape.append(8 if dim is None else int(dim))
+            dummy_inputs.append(
+                torch.zeros(dummy_shape, dtype=self._torch_dtype(dtype_name), device=device)
+            )
+        dummy_payload = dummy_inputs[0] if len(dummy_inputs) == 1 else dummy_inputs
+        with torch.no_grad():
+            features = self._flatten(self.torch_module(dummy_payload))
+        self._feature_dim = int(features.shape[-1])
+        self._current_device = device.type
+        super().build(input_shape)
+
+    def call(self, inputs, training=False):
+        input_values = list(inputs) if isinstance(inputs, (list, tuple)) else [inputs]
+        input_dtypes = self._normalize_input_dtypes(len(input_values))
+        torch_inputs = [
+            torch.as_tensor(value, dtype=self._torch_dtype(dtype_name)).contiguous()
+            for value, dtype_name in zip(input_values, input_dtypes)
+        ]
+
+        reference_tensor = torch_inputs[0]
+        device = reference_tensor.device
+        if device.type == "meta":
+            batch = reference_tensor.shape[0]
+            feat_dim = self._feature_dim or 1
+            return torch.zeros((batch, feat_dim), dtype=torch.float32, device=device)
+        if self._current_device != device.type:
+            self.torch_module.to(device)
+            self._current_device = device.type
+        self.torch_module.train(bool(training))
+        payload = torch_inputs[0] if len(torch_inputs) == 1 else torch_inputs
+        features = self._flatten(self.torch_module(payload)).to(device)
+        if hasattr(self.torch_module, "regularization_loss"):
+            penalty = self.torch_module.regularization_loss()
+            if penalty is not None:
+                self.add_loss(penalty)
+        return features
+
+
+class TextEncoderModule(nn.Module):
+    """Caption encoder using a fully trainable pretrained DistilBERT backbone."""
+
+    def __init__(self, model_name: str) -> None:
+        super().__init__()
+        self.backbone = AutoModel.from_pretrained(model_name)
+        self.dropout = nn.Dropout(TEXT_DROPOUT)
+
+    def _masked_mean_pool(
+        self,
+        last_hidden_state: torch.Tensor,
+        attention_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        mask = attention_mask.unsqueeze(-1).to(last_hidden_state.dtype)
+        masked_hidden = last_hidden_state * mask
+        summed = masked_hidden.sum(dim=1)
+        counts = mask.sum(dim=1).clamp(min=1.0)
+        return summed / counts
+
+    def forward(self, inputs) -> torch.Tensor:
+        input_ids, attention_mask = inputs
+        outputs = self.backbone(
+            input_ids=input_ids.long().contiguous(),
+            attention_mask=attention_mask.long().contiguous(),
+        )
+        pooled = self._masked_mean_pool(
+            outputs.last_hidden_state.contiguous(),
+            attention_mask.long().contiguous(),
+        )
+        return self.dropout(pooled)
+
+
+def build_image_encoder(NDIMS) -> keras.Model:
+    """EfficientNetB0 image encoder matching the original tutorial architecture."""
     image_inputs = keras.Input(shape=(IMG_SIZE, IMG_SIZE, 3), name="image")
-    x_image = layers.Rescaling(1.0 / 255.0, name="image_rescaling")(image_inputs)
-    x_image = layers.Conv2D(32, 3, padding="same", activation="relu", name="conv1")(x_image)
-    x_image = layers.MaxPooling2D(pool_size=2, name="pool1")(x_image)
-    x_image = layers.Conv2D(64, 3, padding="same", activation="relu", name="conv2")(x_image)
-    x_image = layers.MaxPooling2D(pool_size=2, name="pool2")(x_image)
-    x_image = layers.Conv2D(128, 3, padding="same", activation="relu", name="conv3")(x_image)
-    x_image = layers.MaxPooling2D(pool_size=2, name="pool3")(x_image)
-    x_image = layers.Conv2D(256, 3, padding="same", activation="relu", name="conv4")(x_image)
-    image_features = layers.GlobalAveragePooling2D(name="image_pool")(x_image)
-    image_outputs = layers.Dense(256, activation="relu", name="image_projection")(image_features)
-    return keras.Model(image_inputs, image_outputs, name="coco_image_cnn_tf")
+    image_base = keras.applications.EfficientNetB0(
+        include_top=False,
+        weights="imagenet",
+        pooling="avg",
+        input_shape=(IMG_SIZE, IMG_SIZE, 3),
+    )
+    image_base.trainable = True
+
+    x_image = keras.applications.efficientnet.preprocess_input(image_inputs)
+    image_features = image_base(x_image, training=False)
+    image_outputs = layers.Dense(NDIMS, activation="relu", name="image_projection")(image_features)
+    return keras.Model(image_inputs, image_outputs, name="coco_efficientnetb0")
 
 
-def build_text_encoder(ndims: int) -> keras.Model:
-    text_inputs = keras.Input(shape=(VOCAB_SIZE,), dtype="float32", name="caption_bow")
-    x_text = layers.LayerNormalization(epsilon=1e-6)(text_inputs)
-    x_text = layers.Dense(EMBED_DIM, activation="relu", name="bow_hidden")(x_text)
-    x_text = layers.Dropout(TEXT_DROPOUT)(x_text)
-    text_outputs = layers.Dense(ndims, activation="relu", name="text_projection")(x_text)
-    return keras.Model(text_inputs, text_outputs, name="coco_caption_tf")
+def build_text_encoder(NDIMS) -> keras.Model:
+    """DistilBERT text encoder replacing the original scratch transformer."""
+    token_ids = keras.Input(shape=(MAX_TOKENS,), dtype="int32", name="caption_token_ids")
+    attention_mask = keras.Input(shape=(MAX_TOKENS,), dtype="int32", name="caption_attention_mask")
+    text_features = TorchModuleLayer(
+        TextEncoderModule(model_name=TEXT_MODEL_NAME),
+        input_dtype=("int32", "int32"),
+        name="caption_backbone",
+    )([token_ids, attention_mask])
+    text_outputs = layers.Dense(NDIMS, activation="relu", name="text_projection")(text_features)
+    return keras.Model([token_ids, attention_mask], text_outputs, name="coco_caption_torch")
 
 
-def build_model_list(ndims: int) -> list[keras.Model]:
-    image_model = build_image_encoder(ndims)
-    caption_model = build_text_encoder(ndims)
+def build_model_list(NDIMS) -> list[keras.Model]:
+    """Build one image encoder and shared caption encoder views."""
+    image_model = build_image_encoder(NDIMS)
+    caption_model = build_text_encoder(NDIMS)
     return [image_model] + [caption_model for _ in range(NUM_CAPTION_VIEWS)]
 
 
-def make_multiview_dataset(
+# -----------------------------------------------------------------------------
+# 5. Torch dataloaders
+# -----------------------------------------------------------------------------
+class CocoRetrievalDataset(Dataset):
+    """Load COCO images and five tokenized captions per sample."""
+
+    def __init__(
+        self,
+        image_paths: list[str],
+        caption_token_ids: np.ndarray,
+        caption_attention_mask: np.ndarray,
+        training: bool,
+    ) -> None:
+        self.image_paths = image_paths
+        self.caption_token_ids = caption_token_ids
+        self.caption_attention_mask = caption_attention_mask
+        self.training = training
+
+    def __len__(self) -> int:
+        return len(self.image_paths)
+
+    def _load_image(self, image_path: str) -> torch.Tensor:
+        with Image.open(image_path) as image:
+            image = image.convert("RGB")
+            image = image.resize((IMG_SIZE, IMG_SIZE), resample=RESAMPLE_BICUBIC)
+            if self.training and np.random.random() < 0.5:
+                image = image.transpose(Image.FLIP_LEFT_RIGHT)
+            image_arr = np.asarray(image, dtype="float32").copy()
+        return torch.from_numpy(image_arr)
+
+    def __getitem__(self, index: int):
+        image = self._load_image(self.image_paths[index])
+        caption_token_views = self.caption_token_ids[index]
+        caption_mask_views = self.caption_attention_mask[index]
+        return (
+            image,
+            torch.from_numpy(caption_token_views[0].copy()).long(),
+            torch.from_numpy(caption_mask_views[0].copy()).long(),
+            torch.from_numpy(caption_token_views[1].copy()).long(),
+            torch.from_numpy(caption_mask_views[1].copy()).long(),
+            torch.from_numpy(caption_token_views[2].copy()).long(),
+            torch.from_numpy(caption_mask_views[2].copy()).long(),
+            torch.from_numpy(caption_token_views[3].copy()).long(),
+            torch.from_numpy(caption_mask_views[3].copy()).long(),
+            torch.from_numpy(caption_token_views[4].copy()).long(),
+            torch.from_numpy(caption_mask_views[4].copy()).long(),
+        )
+
+
+def collate_multiview(batch):
+    """Return batches as a single x-structure, matching the custom train_step API."""
+    views = list(zip(*batch))
+    collated_views = tuple(torch.stack(list(view), dim=0) for view in views)
+    return (collated_views,)
+
+
+def make_multiview_loader(
     image_paths: list[str],
     caption_sets: list[list[str]],
     training: bool,
-) -> tf.data.Dataset:
-    dataset = tf.data.Dataset.from_tensor_slices(
-        (
-            np.asarray(image_paths, dtype=str),
-            np.asarray(caption_sets, dtype=str),
-        )
+) -> DataLoader:
+    caption_token_ids, caption_attention_mask = tokenize_caption_sets(caption_sets)
+    dataset = CocoRetrievalDataset(
+        image_paths=image_paths,
+        caption_token_ids=caption_token_ids,
+        caption_attention_mask=caption_attention_mask,
+        training=training,
+    )
+    return DataLoader(
+        dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=training,
+        drop_last=training,
+        num_workers=NUM_WORKERS,
+        collate_fn=collate_multiview,
     )
 
-    if training:
-        dataset = dataset.shuffle(len(image_paths), seed=SEED, reshuffle_each_iteration=True)
 
-    def map_example(image_path, captions):
-        image_bytes = tf.io.read_file(image_path)
-        image = tf.io.decode_jpeg(image_bytes, channels=3)
-        image = tf.image.resize(image, [IMG_SIZE, IMG_SIZE])
-        image = tf.cast(image, tf.float32)
-        if training:
-            image = tf.image.random_flip_left_right(image)
-
-        caption_tokens = tf.cast(text_vectorizer(captions), tf.float32)
-
-        views = (
-            image,
-            caption_tokens[0],
-            caption_tokens[1],
-            caption_tokens[2],
-            caption_tokens[3],
-            caption_tokens[4],
-        )
-        return (views,)
-
-    dataset = dataset.map(map_example, num_parallel_calls=AUTOTUNE)
-    dataset = dataset.batch(BATCH_SIZE, drop_remainder=training)
-    return dataset.prefetch(AUTOTUNE)
-
-
+# -----------------------------------------------------------------------------
+# 6. Benchmark task: DLVPM vs CLIP vs VICReg on image-text retrieval
+# -----------------------------------------------------------------------------
 def l2_normalize(matrix: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     norm = np.linalg.norm(matrix, axis=1, keepdims=True)
     return matrix / np.maximum(norm, eps)
@@ -411,9 +620,10 @@ def l2_normalize(matrix: np.ndarray, eps: float = 1e-8) -> np.ndarray:
 
 def collect_image_text_embeddings(
     model: keras.Model,
-    dataset: tf.data.Dataset,
+    dataset: DataLoader,
     max_samples: int,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Collect image embeddings and all five caption embeddings from a dataset."""
     image_batches: list[np.ndarray] = []
     text_batches: list[np.ndarray] = []
     total = 0
@@ -450,6 +660,7 @@ def collect_image_text_embeddings(
 
 
 def aggregate_caption_groups(text_embeddings: np.ndarray) -> np.ndarray:
+    """Aggregate five caption embeddings into one normalized group embedding."""
     if text_embeddings.ndim != 3 or text_embeddings.shape[1] != NUM_CAPTION_VIEWS:
         raise ValueError(
             "Expected text embeddings with shape "
@@ -469,6 +680,7 @@ def retrieval_metrics(
     text_embeddings: np.ndarray,
     ks: tuple[int, ...] = RETRIEVAL_KS,
 ) -> dict[str, float]:
+    """Compute group-level retrieval metrics for image <-> caption-set matching."""
     image_embeddings = l2_normalize(image_embeddings.astype("float32"))
     group_embeddings = aggregate_caption_groups(text_embeddings.astype("float32"))
 
@@ -515,17 +727,17 @@ benchmark_val_caption_sets = val_caption_sets[:benchmark_val_n]
 benchmark_test_paths = test_paths[:benchmark_test_n]
 benchmark_test_caption_sets = test_caption_sets[:benchmark_test_n]
 
-benchmark_train_ds = make_multiview_dataset(
+benchmark_train_ds = make_multiview_loader(
     benchmark_train_paths,
     benchmark_train_caption_sets,
     training=True,
 )
-benchmark_val_ds = make_multiview_dataset(
+benchmark_val_ds = make_multiview_loader(
     benchmark_val_paths,
     benchmark_val_caption_sets,
     training=False,
 )
-benchmark_test_ds = make_multiview_dataset(
+benchmark_test_ds = make_multiview_loader(
     benchmark_test_paths,
     benchmark_test_caption_sets,
     training=False,
@@ -550,6 +762,7 @@ lr_schedule = keras.optimizers.schedules.PiecewiseConstantDecay(
     values=[LEARNING_RATE_START, LEARNING_RATE_END],
 )
 
+# DLVPM baseline
 print("Training DLVPM benchmark model...")
 dlvpm_benchmark_models = build_model_list(NDIMS)
 dlvpm_benchmark = StructuralModel(
@@ -561,9 +774,8 @@ dlvpm_benchmark = StructuralModel(
     orthogonalization="zca",
     diag_offset=1e-6,
     train_DLV=True,
-    momentum=0.95
-    # order=True,
-    # order_loss_weight=1,
+    momentum=0.95,
+    order=True
 )
 dlvpm_optimizers = [
     keras.optimizers.Adam(learning_rate=lr_schedule, clipnorm=1.0)
@@ -583,18 +795,12 @@ dlvpm_img, dlvpm_txt = collect_image_text_embeddings(
 )
 benchmark_results["DLVPM"] = retrieval_metrics(dlvpm_img, dlvpm_txt)
 
-train_DLVs = dlvpm_benchmark.predict(benchmark_train_ds)
-corr_mat = dlvpm_benchmark.calculate_corrmat(train_DLVs)
-
-corrmean = [keras.ops.sum(keras.ops.multiply(a,Path)) for a in corr_mat]
-print(corrmean)
-
-
 test_DLVs = dlvpm_benchmark.predict(benchmark_test_ds)
 corr_mat = dlvpm_benchmark.calculate_corrmat(test_DLVs)
 
 corrmean = [keras.ops.sum(keras.ops.multiply(a,Path)) for a in corr_mat]
 print(corrmean)
+
 
 fig, ax = plot_correlation_chord_row(
     corr_mat,
@@ -609,6 +815,7 @@ fig, ax = plot_correlation_chord_row(
 )
 
 if RUN_BASELINES:
+    # CLIP baseline
     print("Training CLIP baseline...")
     clip_model_list = build_model_list(NDIMS)
     clip_model = CLIP(
@@ -636,6 +843,7 @@ if RUN_BASELINES:
     benchmark_results["CLIP"] = retrieval_metrics(clip_img, clip_txt)
     method_order.append("CLIP")
 
+    # VICReg baseline
     print("Training VICReg baseline...")
     vic_model_list = build_model_list(NDIMS)
     vic_model = VICReg(

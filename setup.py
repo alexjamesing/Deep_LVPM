@@ -13,6 +13,8 @@ setuptools.setup(
         "pydot==4.0.1",
         "scikit-learn==1.6.1",
         "matplotlib==3.9.4",
+        "pytest>=8.0.0",
+        "fiftyone>=1.0.0",
         # Compatible with TensorFlow 2.16.x and Python 3.10–3.11
         "tensorflow-datasets==4.9.4",
     ],
@@ -29,12 +31,6 @@ setuptools.setup(
         "tf-apple": [
             'tensorflow-macos==2.16.2; platform_system=="Darwin" and platform_machine=="arm64"',
             'tensorflow-metal==1.2.0; platform_system=="Darwin" and platform_machine=="arm64"',
-        ],
-
-        # ---------------- Tutorials -----------------
-        # Extra dependencies for the MS COCO image-text tutorial.
-        "tutorial-coco": [
-            "fiftyone>=1.0.0",
         ],
 
         # ---------------- PyTorch -------------------

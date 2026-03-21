@@ -162,7 +162,7 @@ batch_size  = 256
 epochs      = 300
 total_steps = int(rnaseq.shape[0] / batch_size) * epochs
 
-init_lr, final_lr = 1e-4, 1e-5
+init_lr, final_lr = 1e-5, 1e-4
 
 lr_schedule = optimizers.schedules.ExponentialDecay(
     initial_learning_rate=init_lr,
@@ -176,7 +176,7 @@ tot_num = rnaseq.shape[0] ## This is the total number of samples under analysis 
 
 regularizer_list = [regularizers.L1L2(l1=0.001, l2=0.001),regularizers.L1L2(l1=0.001, l2=0.001),regularizers.L1L2(l1=0.001, l2=0.001),regularizers.L1L2(l1=0.001, l2=0.001),regularizers.L1L2(l1=0.001, l2=0.001)] ## These regularizers are applied to the final "projection" layer of the DLVPM model, used internally
 
-DLVPM_Structural_instance = StructuralModel(Path, model_list, regularizer_list, tot_num, ndims, momentum=0.95,epsilon=0.001, orthogonalization='Moore-Penrose', train_DLV =True)
+DLVPM_Structural_instance = StructuralModel(Path, model_list, regularizer_list, tot_num, ndims, momentum=0.95,epsilon=0.001, orthogonalization='zca', train_DLV =True, order=True, order_loss_weight = 1)
 
 opt_list = [keras.optimizers.Adam(learning_rate=lr_schedule),keras.optimizers.Adam(learning_rate=lr_schedule),keras.optimizers.Adam(learning_rate=lr_schedule),keras.optimizers.Adam(learning_rate=lr_schedule),keras.optimizers.Adam(learning_rate=lr_schedule)]
 DLVPM_Structural_instance.compile(optimizer=opt_list)
@@ -208,6 +208,12 @@ test_DLVs = DLVPM_Structural_instance.predict(X_arr_test) ## Here, we obtain the
 print(np.corrcoef(test_DLVs[:,0,:].T))
 ## Associations between the second set of DLVs are:
 print(np.corrcoef(test_DLVs[:,1,:].T))
+
+corr_mat = DLVPM_Structural_instance.calculate_corrmat(test_DLVs) # This outputs correlation matrices between different data types included in the model
+
+corrmean = [keras.ops.mean(a) for a in corr_mat]
+
+print(corrmean)
 
 corr_mat = DLVPM_Structural_instance.calculate_corrmat(test_DLVs) # This outputs correlation matrices between different data types included in the model
 

@@ -18,7 +18,7 @@ deep_lvpm/layers/FactorLayer.py
 deep_lvpm/layers/ZCALayer.py
 deep_lvpm/layers/__init__.py
 deep_lvpm/tutorial/__init__.py
-deep_lvpm/tutorial/tcga_quickstart.py
+deep_lvpm/tutorial/tutorial_coco_pytorch.py
 deep_lvpm/tutorial/tutorial_coco_tf.py
 deep_lvpm/tutorial/tutorial_mnist_tf.py
 deep_lvpm/tutorial/tutorial_siamese_clip_tf.py
@@ -28,3 +28,4 @@ deep_lvpm/tutorial/tutorial_tcga_clip_tf.py
 deep_lvpm/tutorial/tutorial_tcga_tf.py
 deep_lvpm/tutorial/tutorial_tcga_torch.py
 deep_lvpm/tutorial/tutorial_tcga_vicreg_tf.py
+tests/test_missing_views.py

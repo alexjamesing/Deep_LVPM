@@ -299,6 +299,7 @@ def plot_correlation_chord_row(
     corr_matrices,
     labels,
     min_corr=0.2,
+    first_n_dims=None,
     panel_size=(4, 4),
     node_cmap_name="Pastel1",   # pastel, seaborn-like
     figure_title=None,
@@ -346,6 +347,8 @@ def plot_correlation_chord_row(
     # Convert and validate matrices
     # Convert any framework tensors to NumPy for plotting
     corr_list = [_to_numpy(c) for c in corr_matrices]
+    if first_n_dims is not None:
+        corr_list = corr_list[: int(first_n_dims)]
     if len(corr_list) == 0:
         raise ValueError("corr_matrices list is empty.")
 

@@ -455,7 +455,8 @@ dlvpm_model = StructuralModel(
     orthogonalization="zca",
     train_DLV=True,
     is_siamese=True,
-    diag_offset=1e-12
+    diag_offset=1e-12,
+    order=True
 )
 
 # Compile with branch-specific optimisers.
@@ -466,8 +467,8 @@ optimizers = [
 dlvpm_model.compile(optimizers)
 
 # Train the siamese model and monitor validation performance.
-EPOCHS = 10
-# dlvpm_model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, verbose=True)
+EPOCHS = 100
+dlvpm_model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, verbose=True)
 
 
 def remove_last_layers(model: keras.Model, n: int = 1, name: str | None = None) -> keras.Model:

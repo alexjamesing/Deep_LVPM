@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
@@ -94,19 +95,44 @@ def _sample_regularizer(
     return keras.regularizers.l1_l2(l1=l1, l2=l2)
 
 
+def _sample_order_loss_weight(
+    hp: kt.HyperParameters,
+    cfg: Dict[str, Any],
+) -> float:
+    name = "order_loss_weight"
+    if "values" in cfg:
+        values = cfg["values"]
+        if not values:
+            raise ValueError("Order-loss config 'values' list must not be empty.")
+        default = cfg.get("default", values[0])
+        return float(hp.Choice(name, values=values, default=default))
+
+    minimum = cfg.get("min", 1e-4)
+    maximum = cfg.get("max", 1.0)
+    sampling = cfg.get("sampling", "log")
+    default = cfg.get("default", minimum)
+    return float(
+        hp.Float(name, min_value=minimum, max_value=maximum, sampling=sampling, default=default)
+    )
+
+
 def sample_structural_hparams(
     hp: kt.HyperParameters,
     n_views: int,
     target_view: int,
     current_sparse: Sequence[float],
     current_regularizers: Sequence[Optional[keras.regularizers.Regularizer]],
+    current_order_loss_weight: float = 1.0,
     sparse_config: Optional[Iterable[Dict[str, Any]]] = None,
     regularizer_config: Optional[Iterable[Dict[str, Any]]] = None,
+    order_loss_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Samples per-view sparsity/regulariser values and folds them into lists.
 
     Only the entry for ``target_view`` is resampled; the remaining entries use the
-    lists provided in ``current_sparse`` and ``current_regularizers``.
+    lists provided in ``current_sparse`` and ``current_regularizers``. When
+    ``order_loss_config`` is provided, a global ``order_loss_weight`` is also
+    sampled for the current structural-model trial.
     """
 
     sparse_cfgs = _ensure_per_view_config(sparse_config, n_views)
@@ -120,10 +146,16 @@ def sample_structural_hparams(
 
     sparse_list[target_view] = _sample_sparse_value(hp, sparse_cfgs[target_view], target_view)
     reg_list[target_view] = _sample_regularizer(hp, regularizer_cfgs[target_view], target_view)
+    order_loss_weight = (
+        _sample_order_loss_weight(hp, order_loss_config)
+        if order_loss_config is not None
+        else float(current_order_loss_weight)
+    )
 
     return {
         "sparse_l1_list": sparse_list,
         "regularizer_list": reg_list,
+        "order_loss_weight": order_loss_weight,
     }
 
 
@@ -147,6 +179,10 @@ class Tuner:
     sparse_config, regularizer_config : iterable of dict or dict, optional
         User-defined hyperparameter ranges per view. See
         :func:`sample_structural_hparams` for the accepted keys.
+    order_loss_config : dict, optional
+        Global sampling configuration for the learnable ordering-loss weight used
+        when ``StructuralModel(order=True)``. Supports either ``{"values": [...]}``
+        or ``{"min": ..., "max": ..., "sampling": ...}``.
     metric : {"correlation", "redundancy"}, optional
         Metric optimised for each view. Currently only ``"correlation"`` is
         implemented, which maximises the average Pearson correlation between the
@@ -164,6 +200,7 @@ class Tuner:
         max_trials_per_view: int = 5,
         sparse_config: Optional[Iterable[Dict[str, Any]]] = None,
         regularizer_config: Optional[Iterable[Dict[str, Any]]] = None,
+        order_loss_config: Optional[Dict[str, Any]] = None,
         metric: str = "correlation",
         seed: Optional[int] = None,
         search_run_eagerly: bool = True,
@@ -204,16 +241,17 @@ class Tuner:
 
         self.current_sparse_l1_list = list(base_sparse)
         self.current_regularizer_list = list(base_reg)
+        self.current_order_loss_weight = float(self.structural_kwargs.get("order_loss_weight", 1.0))
 
         self.sparse_config = sparse_config
         self.regularizer_config = regularizer_config
+        self.order_loss_config = order_loss_config
 
         self.view_hp_store: List[Optional[Dict[str, Any]]] = [None] * self.n_views
         # Track globally accepted cross metric across all views
         self.current_global_cross: float = float("-inf")
         self._best_structural_metrics: Dict[str, Any] = {}
 
-    @staticmethod
     @staticmethod
     def _to_float(value: Any) -> Optional[float]:
         if value is None:
@@ -232,6 +270,7 @@ class Tuner:
                 "cross_metric": cls._to_float(metrics.get("cross_metric")),
                 "mse_loss": cls._to_float(metrics.get("mse_loss")),
                 "redundancy": cls._to_float(metrics.get("redundancy")),
+                "order_loss": cls._to_float(metrics.get("order_loss")),
             }
 
         if isinstance(metrics, (list, tuple)):
@@ -243,9 +282,10 @@ class Tuner:
                 "cross_metric": cls._to_float(cross),
                 "mse_loss": cls._to_float(mse),
                 "redundancy": cls._to_float(redundancy),
+                "order_loss": cls._to_float(values[4] if len(values) > 4 else None),
             }
 
-        return {"cross_metric": None, "mse_loss": None, "redundancy": None}
+        return {"cross_metric": None, "mse_loss": None, "redundancy": None, "order_loss": None}
 
     @staticmethod
     def _format_metric(value: Optional[float]) -> str:
@@ -253,8 +293,40 @@ class Tuner:
 
     @staticmethod
     def _clone_optimizer(opt):
-        config = keras.optimizers.serialize(opt)
-        return keras.optimizers.deserialize(config)
+        def _plain_value(value: Any) -> Any:
+            if isinstance(value, (bool, int, float, str, type(None))):
+                return value
+            if isinstance(value, np.ndarray):
+                return value
+            try:
+                array_value = np.asarray(keras.ops.convert_to_numpy(value))
+                if array_value.shape == ():
+                    return array_value.item()
+                return array_value
+            except Exception:
+                return value
+
+        optimizer_cls = opt.__class__
+        signature = inspect.signature(optimizer_cls.__init__)
+        kwargs = {}
+
+        for name, parameter in signature.parameters.items():
+            if name in {"self", "args", "kwargs"}:
+                continue
+            if not hasattr(opt, name):
+                continue
+            if parameter.kind not in {
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            }:
+                continue
+            kwargs[name] = _plain_value(getattr(opt, name))
+
+        try:
+            return optimizer_cls(**kwargs)
+        except Exception:
+            learning_rate = _plain_value(getattr(opt, "learning_rate", 1e-3))
+            return optimizer_cls(learning_rate=learning_rate)
 
     def _clone_optimizers(self, optimizers: Any):
         if isinstance(optimizers, (list, tuple)):
@@ -284,6 +356,7 @@ class Tuner:
         model_list: Sequence[keras.Model],
         sparse_l1_list: Sequence[float],
         regularizer_list: Sequence[Optional[keras.regularizers.Regularizer]],
+        order_loss_weight: float,
     ) -> StructuralModel:
         kwargs = {
             "Path": self.structural_kwargs["Path"],
@@ -298,7 +371,9 @@ class Tuner:
             "is_siamese": self.structural_kwargs.get("is_siamese", False),
             "diag_offset": self.structural_kwargs.get("diag_offset", 1e-3),
             "sparse_l1_list": list(sparse_l1_list),
+            "orthog_weight": self.structural_kwargs.get("orthog_weight", 0.0),
             "order": self.structural_kwargs.get("order", False),
+            "order_loss_weight": order_loss_weight,
         }
 
         return StructuralModel(**kwargs)
@@ -382,14 +457,17 @@ class Tuner:
                         target_view=view_idx,
                         current_sparse=self.current_sparse_l1_list,
                         current_regularizers=self.current_regularizer_list,
+                        current_order_loss_weight=self.current_order_loss_weight,
                         sparse_config=self.sparse_config,
                         regularizer_config=self.regularizer_config,
+                        order_loss_config=self.order_loss_config,
                     )
 
                     struct_model = self._make_structural_model(
                         model_list,
                         sparse_l1_list=struct_cfg["sparse_l1_list"],
                         regularizer_list=struct_cfg["regularizer_list"],
+                        order_loss_weight=struct_cfg["order_loss_weight"],
                     )
                     struct_model.compile(self._clone_optimizers(optimizers))
                     if self.search_run_eagerly and hasattr(struct_model, "run_eagerly"):
@@ -410,20 +488,25 @@ class Tuner:
                         }
                         self.current_sparse_l1_list = list(struct_cfg["sparse_l1_list"])
                         self.current_regularizer_list = list(struct_cfg["regularizer_list"])
+                        self.current_order_loss_weight = float(struct_cfg["order_loss_weight"])
                         self.current_global_cross = score
                         self._best_structural_metrics = {
                             "loop": loop,
                             "view": view_idx,
                             "cross": score,
+                            "order_loss_weight": self.current_order_loss_weight,
                         }
                         cross = score
                         mse = global_metrics["mse_loss"]
                         red = global_metrics["redundancy"]
+                        order_loss = global_metrics["order_loss"]
                         print(
                             f"[Improved] Loop {loop + 1}, view {view_idx + 1}: "
                             f"cross={self._format_metric(cross)}, "
                             f"mse={self._format_metric(mse)}, "
-                            f"redundancy={self._format_metric(red)}"
+                            f"redundancy={self._format_metric(red)}, "
+                            f"order_loss={self._format_metric(order_loss)}, "
+                            f"order_loss_weight={self.current_order_loss_weight:.4g}"
                         )
                 view_prog.update(view_idx + 1)
             loop_prog.update(loop + 1)
@@ -437,6 +520,7 @@ class Tuner:
             model_list,
             sparse_l1_list=self.current_sparse_l1_list,
             regularizer_list=self.current_regularizer_list,
+            order_loss_weight=self.current_order_loss_weight,
         )
         struct_model.compile(self._clone_optimizers(optimizers))
         struct_model.run_eagerly = run_eagerly

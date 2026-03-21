@@ -240,21 +240,23 @@ class CLIP(keras.Model):
 
             grads = torch.autograd.grad(loss, all_vars, retain_graph=False, create_graph=False, allow_unused=True)
 
-            # Apply grads per view
+            # Apply grads per view and attach the temperature update to view 0.
             idx = 0
-            for mdl in self.model_list:
+            for m, mdl in enumerate(self.model_list):
                 n = len(mdl.trainable_variables)
                 grads_m = [
                     g if g is not None else torch.zeros_like(getattr(v, "value", v))
                     for g, v in zip(grads[idx:idx+n], mdl.trainable_variables)
                 ]
-                mdl.optimizer.apply_gradients(zip(grads_m, mdl.trainable_variables))
+                vars_m = list(mdl.trainable_variables)
+                if m == 0:
+                    g_temp = grads[-1]
+                    grads_m = grads_m + [
+                        g_temp if g_temp is not None else torch.zeros_like(getattr(self.logit_scale, "value", self.logit_scale))
+                    ]
+                    vars_m = vars_m + [self.logit_scale]
+                mdl.optimizer.apply_gradients(zip(grads_m, vars_m))
                 idx += n
-
-            # Temperature grad
-            g_temp = grads[idx]
-            if g_temp is not None:
-                self.model_list[0].optimizer.apply_gradients([(g_temp, self.logit_scale)])
 
             self.clip_loss_tracker.update_state(loss)
             return {"clip_loss": self.clip_loss_tracker.result()}
