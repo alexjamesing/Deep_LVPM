@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 
 from deep_lvpm.model import StructuralModel
-from deep_lvpm.plot import plot_correlation_chord_row
+from deep_lvpm.plot import plot_correlation_graph, plot_correlation_matrix
 
 # ------------------------------------------------------------------
 # Data loading
@@ -123,7 +123,7 @@ Path = np.array(
 )
 
 batch_size = 256
-epochs = 300
+epochs = 200
 tot_num = rnaseq.shape[0]
 
 regularizer_list = [(0.001, 0.001)] * len(model_list)
@@ -194,13 +194,14 @@ corr_mat = model.calculate_corrmat(test_DLVs)
 
 data_names = ["Histology", "RNASeq", "miRNASeq", "Methylation", "SNVs"]
 
-fig, ax = plot_correlation_chord_row(
+fig, ax = plot_correlation_graph(
     corr_mat,
     data_names,
-    min_corr=0,
-    node_cmap_name="Pastel1",
-    figure_title="Correlation Plots Between Omics and Imaging Data Types in Lung Cancer",
-    show_edge_labels=True,
-    dpi=300,
-    show=True,
+    figure_title="Correlation Graph Between Omics and Imaging Data Types in Lung Cancer",
+)
+
+fig, ax = plot_correlation_matrix(
+    corr_mat,
+    data_names,
+    figure_title="Correlation Matrix Between Omics and Imaging Data Types in Lung Cancer",
 )

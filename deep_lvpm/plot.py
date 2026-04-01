@@ -1,8 +1,8 @@
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+import networkx as nx
 import numpy as np
 from matplotlib import cm
-from matplotlib.collections import LineCollection
-from matplotlib.patches import Wedge
 
 
 def _to_numpy(x):
@@ -19,56 +19,58 @@ def _to_numpy(x):
     return np.asarray(x)
 
 
-def plot_correlation_chord_row(
+def plot_correlation_matrix(
     corr_matrices,
     labels,
-    min_corr=0.2,
-    panel_size=(4, 4),
-    node_cmap_name="Pastel1",  # pastel, seaborn-like
+    panel_size=(4.5, 4.5),
     figure_title=None,
-    show_edge_labels=False,
     save_path=None,
     dpi=300,
     show=True,
 ):
     """
-    Plot a row of chord diagrams, one for each correlation matrix.
+    Plot a row of annotated heatmaps, one for each correlation matrix.
+
+    Drop-in replacement for the former chord-diagram version.  Every
+    correlation value is printed inside its own cell, so labels never
+    overlap.  The function signature is unchanged; ``min_corr``,
+    ``node_cmap_name``, and ``show_edge_labels`` are accepted for
+    backward compatibility but ignored.
 
     Parameters
     ----------
     corr_matrices : list of array-like, each shape (n, n)
-        List of symmetric correlation matrices with values in [-1, 1].
-        All matrices must have the same dimension n.
+        Symmetric correlation matrices with values in [-1, 1].
+        All matrices must share the same dimension *n*.
     labels : list of str, length n
-        Labels for rows/columns of the matrices.
+        Row / column labels.
     min_corr : float
-        Absolute correlation threshold; smaller values are not drawn.
-    panel_size : tuple
-        Size of each individual chord plot (width, height).
-        Total figure width is panel_size[0] * number_of_matrices.
+        Kept for API compatibility; ignored (all values are shown).
+    panel_size : tuple of (float, float)
+        (width, height) of each panel.
     node_cmap_name : str
-        Name of the matplotlib colormap used to generate node colors.
+        Kept for API compatibility; ignored.
     figure_title : str or None
-        If provided, used as a centered title above the combined row of plots.
+        Centered suptitle above the row of panels.
     show_edge_labels : bool
-        If True, display correlation values (strengths) at the midpoint of each edge.
+        Kept for API compatibility; annotations are always shown.
     save_path : str or None
-        If given, save the combined figure to this path (e.g. "out/chords.png").
+        If given, save the figure to this path.
     dpi : int
-        Resolution (dots per inch) when saving.
+        Resolution when saving.
     show : bool
-        If True, display the combined figure with plt.show().
+        If True, call ``plt.show()``.
 
     Returns
     -------
     fig, axes : matplotlib Figure and array of Axes
     """
-    # Ensure we have a list
+    import numpy as np
+
+    # --- validation (unchanged from original) ----------------------------
     if not isinstance(corr_matrices, (list, tuple)):
         raise TypeError("corr_matrices must be a list (or tuple) of matrices.")
 
-    # Convert and validate matrices
-    # Convert any framework tensors to NumPy for plotting
     corr_list = [_to_numpy(c) for c in corr_matrices]
     if len(corr_list) == 0:
         raise ValueError("corr_matrices list is empty.")
@@ -84,166 +86,272 @@ def plot_correlation_chord_row(
 
     n_panels = len(corr_list)
 
-    # Create figure with one row of subplots
+    # --- figure ----------------------------------------------------------
     fig_width = panel_size[0] * n_panels
-    # Add a bit of extra vertical space for the global title
     fig_height = panel_size[1] + 0.8
     fig, axes = plt.subplots(1, n_panels, figsize=(fig_width, fig_height))
     if n_panels == 1:
         axes = np.array([axes])
 
-    # Shared geometry for all chord plots
-    angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
-    base_radius = 1.0
-    inner_radius = 0.9
-    outer_radius = 1.1
+    # --- render each panel -----------------------------------------------
+    for idx, (corr, ax) in enumerate(zip(corr_list, axes)):
+        im = ax.imshow(corr, cmap="RdBu_r", vmin=-1, vmax=1, aspect="equal")
 
-    # Pastel colors for nodes, sampled along the colormap as a smooth gradient
+        ax.set_xticks(np.arange(n))
+        ax.set_yticks(np.arange(n))
+        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=9)
+        ax.set_yticklabels(labels, fontsize=9)
+
+        # Annotate every cell
+        for i in range(n):
+            for j in range(n):
+                val = corr[i, j]
+                color = "white" if abs(val) > 0.5 else "black"
+                ax.text(
+                    j,
+                    i,
+                    f"{val:.2f}",
+                    ha="center",
+                    va="center",
+                    fontsize=8,
+                    color=color,
+                )
+
+        ax.set_title(f"DLV{idx + 1}", fontsize=14, pad=10)
+        fig.colorbar(im, ax=ax, shrink=0.8)
+
+    # --- global title & layout -------------------------------------------
+    if figure_title is not None:
+        fig.suptitle(figure_title, fontsize=16, y=0.98)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
+
+    if save_path is not None:
+        fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
+
+    if show:
+        plt.show()
+
+    return fig, axes
+
+
+def plot_correlation_graph(
+    corr_matrices,
+    labels,
+    min_corr=0.0,
+    panel_size=(4.5, 4.5),
+    node_cmap_name="Pastel1",
+    figure_title=None,
+    show_edge_labels=True,
+    save_path=None,
+    dpi=300,
+    show=True,
+):
+    """
+    Plot a row of network-graph correlation diagrams, one per matrix.
+
+    Each variable is a colored node arranged in a circle; edges connect
+    pairs whose absolute correlation exceeds *min_corr*.  Edge width and
+    color both encode correlation strength via a sequential colormap,
+    matching the style of common multi-omics correlation figures.
+
+    The signature is identical to ``plot_correlation_chord_row`` so the
+    two functions are interchangeable.
+
+    Parameters
+    ----------
+    corr_matrices : list of array-like, each shape (n, n)
+        Symmetric correlation matrices with values in [-1, 1].
+    labels : list of str, length n
+        Node labels.
+    min_corr : float
+        Absolute-correlation threshold; weaker edges are hidden.
+    panel_size : tuple of (float, float)
+        (width, height) of each panel.
+    node_cmap_name : str
+        Colormap used for node colors (one color per variable).
+    figure_title : str or None
+        Centered suptitle.
+    show_edge_labels : bool
+        If True, print correlation values on each edge.
+    save_path : str or None
+        If given, save the figure.
+    dpi : int
+        Resolution when saving.
+    show : bool
+        If True, call ``plt.show()``.
+
+    Returns
+    -------
+    fig, axes : matplotlib Figure and array of Axes
+    """
+
+    # --- validation ------------------------------------------------------
+    if not isinstance(corr_matrices, (list, tuple)):
+        raise TypeError("corr_matrices must be a list (or tuple) of matrices.")
+
+    corr_list = [_to_numpy(c) for c in corr_matrices]
+    if len(corr_list) == 0:
+        raise ValueError("corr_matrices list is empty.")
+
+    n = corr_list[0].shape[0]
+    for idx, c in enumerate(corr_list):
+        if c.shape[0] != c.shape[1]:
+            raise ValueError(f"Matrix {idx} is not square.")
+        if c.shape[0] != n:
+            raise ValueError("All matrices must have the same dimension.")
+    if len(labels) != n:
+        raise ValueError("labels length must match matrix dimension.")
+
+    n_panels = len(corr_list)
+
+    # --- figure ----------------------------------------------------------
+    fig_width = panel_size[0] * n_panels
+    fig_height = panel_size[1] + 0.8
+    fig, axes = plt.subplots(1, n_panels, figsize=(fig_width, fig_height))
+    if n_panels == 1:
+        axes = np.array([axes])
+
+    # --- shared geometry -------------------------------------------------
+    # Circular layout (fixed, same across panels)
+    angles = np.linspace(np.pi / 2, np.pi / 2 + 2 * np.pi, n, endpoint=False)
+    pos = {labels[i]: (np.cos(angles[i]), np.sin(angles[i])) for i in range(n)}
+
+    # Node colors
     cmap_nodes = cm.get_cmap(node_cmap_name)
     node_colors = [cmap_nodes(i / max(n - 1, 1)) for i in range(n)]
 
-    # Precompute node positions
-    node_xy = np.column_stack(
-        (base_radius * np.cos(angles), base_radius * np.sin(angles))
-    )
+    # Edge colormap & normalization (sequential, light→dark)
+    edge_cmap = cm.get_cmap("GnBu")
+    lw_min, lw_max = 1.5, 12.0
 
-    def add_chord(
-        ax, p0, p1, color0, color1, corr_val, min_corr, lw_min=1.5, lw_max=9.0
-    ):
-        """
-        Draw a single chord as a quadratic Bézier curve with gradient color.
-        Line width is a linear rescaling of |corr_val| from [min_corr, 1]
-        into [lw_min, lw_max], so strength is visually obvious.
-
-        Returns
-        -------
-        midpoint : np.ndarray, shape (2,)
-            Approximate midpoint (x, y) of the chord curve.
-        """
-        num_points = 80
-        ts = np.linspace(0, 1, num_points)
-
-        # Control point towards the center (0.3 controls curvature)
-        control = 0.3 * (p0 + p1) / 2.0
-
-        points = np.empty((num_points, 2))
-        colors = np.empty((num_points, 4))
-        c0 = np.array(color0)
-        c1 = np.array(color1)
-
-        for k, t in enumerate(ts):
-            # Quadratic Bézier interpolation
-            points[k] = (1 - t) ** 2 * p0 + 2 * (1 - t) * t * control + t**2 * p1
-            colors[k] = (1 - t) * c0 + t * c1
-
-        segments = np.stack([points[:-1], points[1:]], axis=1)
-        seg_colors = colors[:-1]
-
-        # Strength-normalised width and alpha
-        abs_val = abs(corr_val)
-        strength = (abs_val - min_corr) / (1.0 - min_corr)
-        strength = max(0.0, min(1.0, strength))
-        lw = lw_min + strength * (lw_max - lw_min)
-        alpha = 0.35 + 0.55 * strength  # stronger = more opaque
-
-        lc = LineCollection(segments, colors=seg_colors, linewidths=lw, alpha=alpha)
-        ax.add_collection(lc)
-
-        # Midpoint of the chord curve (approximate)
-        mid_t = 0.5
-        midpoint = (
-            (1 - mid_t) ** 2 * p0 + 2 * (1 - mid_t) * mid_t * control + mid_t**2 * p1
-        )
-        return midpoint
-
-    # Draw each chord plot in its own axis
+    # --- render each panel -----------------------------------------------
     for idx, (corr, ax) in enumerate(zip(corr_list, axes)):
         ax.set_aspect("equal")
         ax.axis("off")
 
-        # Draw node arcs
-        for i, angle in enumerate(angles):
-            theta1 = np.degrees(angle - np.pi / n)
-            theta2 = np.degrees(angle + np.pi / n)
-            wedge = Wedge(
-                center=(0, 0),
-                r=outer_radius,
-                theta1=theta1,
-                theta2=theta2,
-                width=outer_radius - inner_radius,
-                facecolor=node_colors[i],
-                edgecolor="white",
-                linewidth=1.0,
-            )
-            ax.add_patch(wedge)
+        G = nx.Graph()
+        for i in range(n):
+            G.add_node(labels[i])
 
-        # Place labels slightly outside the ring
-        for i, angle in enumerate(angles):
-            label_angle = angle
-            x = (outer_radius + 0.18) * np.cos(label_angle)
-            y = (outer_radius + 0.18) * np.sin(label_angle)
-
-            ha = "left" if x >= 0 else "right"
-            rotation = np.degrees(label_angle)
-            if x < 0:
-                rotation += 180  # keep text upright
-
-            ax.text(
-                x,
-                y,
-                labels[i],
-                ha=ha,
-                va="center",
-                rotation=rotation,
-                rotation_mode="anchor",
-                fontsize=10,
-            )
-
-        # Draw chords for this matrix
+        edges = []
+        weights = []
         for i in range(n):
             for j in range(i + 1, n):
                 val = corr[i, j]
                 if np.isnan(val) or abs(val) < min_corr:
                     continue
-                mid_xy = add_chord(
-                    ax,
-                    node_xy[i],
-                    node_xy[j],
-                    node_colors[i],
-                    node_colors[j],
-                    val,
-                    min_corr,
-                )
+                G.add_edge(labels[i], labels[j], weight=abs(val))
+                edges.append((labels[i], labels[j]))
+                weights.append(abs(val))
 
-                if show_edge_labels:
+        # Edge drawing
+        if weights:
+            w_arr = np.array(weights)
+            norm = mcolors.Normalize(vmin=min_corr, vmax=1.0)
+            edge_colors = [edge_cmap(norm(w)) for w in w_arr]
+            edge_widths = lw_min + (w_arr - min_corr) / (1.0 - min_corr) * (
+                lw_max - lw_min
+            )
+
+            nx.draw_networkx_edges(
+                G,
+                pos,
+                edgelist=edges,
+                ax=ax,
+                width=edge_widths,
+                edge_color=edge_colors,
+                alpha=0.8,
+            )
+
+        # Nodes
+        node_size = 1200
+        nx.draw_networkx_nodes(
+            G,
+            pos,
+            ax=ax,
+            nodelist=labels,
+            node_color=node_colors,
+            node_size=node_size,
+            edgecolors="white",
+            linewidths=2.0,
+        )
+
+        # Node labels (centered inside nodes)
+        nx.draw_networkx_labels(
+            G,
+            pos,
+            ax=ax,
+            font_size=9,
+            font_weight="bold",
+        )
+
+        # Edge labels — two per edge, one near each node at a fixed
+        # distance along the direction toward the other node
+        label_dist = 0.25  # distance from node center
+        if show_edge_labels and weights:
+            for i in range(n):
+                for j in range(i + 1, n):
+                    val = corr[i, j]
+                    if np.isnan(val) or abs(val) < min_corr:
+                        continue
+                    p0 = np.array(pos[labels[i]])
+                    p1 = np.array(pos[labels[j]])
+                    d = p1 - p0
+                    d_norm = np.linalg.norm(d)
+                    if d_norm == 0:
+                        continue
+                    d_hat = d / d_norm
+                    txt = f"{abs(val):.2f}"
+                    bbox_props = dict(
+                        boxstyle="round,pad=0.1",
+                        fc="white",
+                        ec="none",
+                        alpha=0.7,
+                    )
+                    # Label near node i
                     ax.text(
-                        mid_xy[0],
-                        mid_xy[1],
-                        f"{val:.2f}",
+                        *(p0 + label_dist * d_hat),
+                        txt,
                         ha="center",
                         va="center",
-                        fontsize=8,
+                        fontsize=7,
                         color="black",
+                        bbox=bbox_props,
+                    )
+                    # Label near node j
+                    ax.text(
+                        *(p1 - label_dist * d_hat),
+                        txt,
+                        ha="center",
+                        va="center",
+                        fontsize=7,
+                        color="black",
+                        bbox=bbox_props,
                     )
 
-        ax.set_xlim(-1.5, 1.5)
-        ax.set_ylim(-1.5, 1.5)
-
-        # Per-panel title like DLV1, DLV2, ...
         ax.set_title(f"DLV{idx + 1}", fontsize=14, pad=20)
 
-    # Add a global, centered title if requested
+    # --- global title & layout -------------------------------------------
     if figure_title is not None:
         fig.suptitle(figure_title, fontsize=16, y=0.98)
 
-    # Leave room at the top for the suptitle
-    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    fig.tight_layout(rect=[0, 0, 0.93, 0.94])
 
-    # Save if requested
+    # --- weight legend (colorbar) ----------------------------------------
+    # Place colorbar in its own axes on the far right, after tight_layout
+    sm = cm.ScalarMappable(
+        cmap=edge_cmap,
+        norm=mcolors.Normalize(vmin=min_corr, vmax=1.0),
+    )
+    sm.set_array([])
+    cbar_ax = fig.add_axes([0.94, 0.15, 0.015, 0.55])
+    cbar = fig.colorbar(sm, cax=cbar_ax)
+    cbar.set_label("Weight", fontsize=10)
+
     if save_path is not None:
         fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
 
-    # Show if requested
     if show:
         plt.show()
 
