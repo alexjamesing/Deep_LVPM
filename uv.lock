@@ -145,6 +145,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "matplotlib" },
     { name = "pydot" },
+    { name = "pytest" },
     { name = "scikit-learn" },
     { name = "torch" },
     { name = "torchaudio" },
@@ -161,6 +162,7 @@ dev = [
 requires-dist = [
     { name = "matplotlib", specifier = ">=3.9" },
     { name = "pydot", specifier = ">=4.0" },
+    { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "scikit-learn", specifier = ">=1.6" },
     { name = "torch", specifier = ">=2.0" },

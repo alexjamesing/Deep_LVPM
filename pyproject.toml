@@ -14,10 +14,8 @@ dependencies = [
     "scikit-learn>=1.6",
     "matplotlib>=3.9",
     "tqdm>=4.67.3",
+    "pytest>=9.0.2",
 ]
-
-[project.optional-dependencies]
-dev = ["pytest"]
 
 [project.urls]
 Homepage = "https://deep-lvpm.readthedocs.io"
