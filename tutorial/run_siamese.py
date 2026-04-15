@@ -19,6 +19,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import LinearSVC
 from torchvision import datasets
+from tqdm import tqdm
 
 from deep_lvpm.model import StructuralModel
 
@@ -178,28 +179,46 @@ device = model.device
 
 
 def extract_features(
-    x_np: np.ndarray, model: nn.Module, batch: int = 256
+    x_np: np.ndarray, model: nn.Module, batch: int = 1024, desc: str = "extract"
 ) -> np.ndarray:
-    chunks = []
-    t = torch.as_tensor(x_np, dtype=torch.float32).to(device)
-    with torch.no_grad():
-        for start in range(0, len(t), batch):
-            chunks.append(model(t[start : start + batch]).cpu())
-    return torch.cat(chunks).numpy()
+    t = torch.as_tensor(x_np, dtype=torch.float32)
+    if torch.device(device).type == "cuda":
+        t = t.pin_memory()
+    outs = []
+    n = len(t)
+    with torch.inference_mode():
+        for start in tqdm(range(0, n, batch), desc=desc, unit="batch"):
+            chunk = t[start : start + batch].to(device, non_blocking=True)
+            outs.append(model(chunk))
+    return torch.cat(outs).cpu().numpy()
 
 
-train_feats = extract_features(x_train, backbone)
-test_feats = extract_features(x_test, backbone)
+train_feats = extract_features(x_train, backbone, desc="train features")
+test_feats = extract_features(x_test, backbone, desc="test features")
 
 print(f"Backbone features — train: {train_feats.shape},  test: {test_feats.shape}")
+
+svm_subset = 1000  # set to None to use all training features
+if svm_subset is not None and svm_subset < len(train_feats):
+    rng = np.random.default_rng(42)
+    idx = rng.choice(len(train_feats), size=svm_subset, replace=False)
+    train_feats_svm = train_feats[idx]
+    y_train_svm = y_train_cat[idx]
+    print(f"Using {svm_subset}/{len(train_feats)} training samples for SVM")
+else:
+    train_feats_svm = train_feats
+    y_train_svm = y_train_cat
 
 svm_clf = Pipeline(
     [
         ("scaler", StandardScaler()),
-        ("svm", LinearSVC(C=1.0, max_iter=10000, random_state=42)),
+        (
+            "svm",
+            LinearSVC(C=1.0, dual=False, max_iter=1000, random_state=42, verbose=0),
+        ),
     ]
 )
-svm_clf.fit(train_feats, y_train_cat)
+svm_clf.fit(train_feats_svm, y_train_svm)
 predictions = svm_clf.predict(test_feats)
 accuracy = accuracy_score(y_test_cat, predictions)
 

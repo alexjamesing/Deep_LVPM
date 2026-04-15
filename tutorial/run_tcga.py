@@ -5,12 +5,27 @@ PyTorch backend.  Trains residual encoders for each omics/imaging
 modality and plots inter-view correlation chord diagrams.
 """
 
+from datetime import datetime
+from pathlib import Path as _Path
+
 import numpy as np
 import torch
 import torch.nn as nn
 
 from deep_lvpm.model import StructuralModel
-from deep_lvpm.plot import plot_correlation_graph, plot_correlation_matrix
+from deep_lvpm.plot import (
+    plot_correlation_graph,
+    plot_correlation_matrix,
+    plot_training_history,
+)
+
+# ------------------------------------------------------------------
+# Log directory
+# ------------------------------------------------------------------
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+log_dir = _Path("logs") / f"{timestamp}_run_tcga"
+log_dir.mkdir(parents=True, exist_ok=True)
+print(f"Logging outputs to: {log_dir.resolve()}")
 
 # ------------------------------------------------------------------
 # Data loading
@@ -158,7 +173,7 @@ model.compile(optimizer=opt_list)
 # Training
 # ------------------------------------------------------------------
 
-model.fit(
+history = model.fit(
     X_train=X_train,
     batch_size=batch_size,
     epochs=epochs,
@@ -183,25 +198,51 @@ print(
     f"r={mean_corr_test['cross_metric']:.4f}"
 )
 
-test_DLVs = model.predict(X_val_test)
-
-print("Correlations between first set of DLVs:")
-print(np.corrcoef(test_DLVs[:, 0, :].T))
-print("Correlations between second set of DLVs:")
-print(np.corrcoef(test_DLVs[:, 1, :].T))
-
-corr_mat = model.calculate_corrmat(test_DLVs)
-
 data_names = ["Histology", "RNASeq", "miRNASeq", "Methylation", "SNVs"]
 
-fig, ax = plot_correlation_graph(
-    corr_mat,
-    data_names,
-    figure_title="Correlation Graph Between Omics and Imaging Data Types in Lung Cancer",
-)
+# --- Prediction & visualization ---
+for split_name, X in [("train", X_train), ("val_test", X_val_test)]:
+    dlv = model.predict(X)
 
-fig, ax = plot_correlation_matrix(
-    corr_mat,
-    data_names,
-    figure_title="Correlation Matrix Between Omics and Imaging Data Types in Lung Cancer",
+    print(f"\nCorrelations between first set of DLVs ({split_name}):")
+    print(np.corrcoef(dlv[:, 0, :].T))
+    print(f"Correlations between second set of DLVs ({split_name}):")
+    print(np.corrcoef(dlv[:, 1, :].T))
+
+    corr_mat = model.calculate_corrmat(dlv)
+
+    graph_path = log_dir / f"corr_graph_{split_name}.png"
+    plot_correlation_graph(
+        corr_mat,
+        data_names,
+        figure_title=(
+            "Correlation Graph Between Omics and Imaging Data Types in Lung "
+            f"Cancer ({split_name} set)"
+        ),
+        save_path=graph_path,
+        show=False,
+    )
+    print(f"Saved correlation graph ({split_name}) to {graph_path}")
+
+    matrix_path = log_dir / f"corr_matrix_{split_name}.png"
+    plot_correlation_matrix(
+        corr_mat,
+        data_names,
+        figure_title=(
+            "Correlation Matrix Between Omics and Imaging Data Types in Lung "
+            f"Cancer ({split_name} set)"
+        ),
+        save_path=matrix_path,
+        show=False,
+    )
+    print(f"Saved correlation matrix ({split_name}) to {matrix_path}")
+
+
+# --- Training progress plot ---
+history_path = log_dir / "training_history.png"
+plot_training_history(
+    history,
+    save_path=history_path,
+    show=False,
 )
+print(f"Saved training history plot to {history_path}")

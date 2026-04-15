@@ -1,8 +1,7 @@
 # ---------------- General --------------
 CLAUDE.md
 .DS_Store
-paper.pdf
-
+logs/
 
 # ---------------- Python --------------
 # Byte-compiled / optimized / DLL files

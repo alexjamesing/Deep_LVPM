@@ -39,14 +39,14 @@ uv pip install .[dev]
 
 Three runnable tutorials are included: 
 
-Associate MNIST images with digit labels.
-```bash
-uv run -m tutorial.run_mnist
-```
-
 Integrate five TCGA lung cancer modalities.
 ```bash
 uv run -m tutorial.run_tcga
+```
+
+Associate MNIST images with digit labels.
+```bash
+uv run -m tutorial.run_mnist
 ```
 
 Demonstrate a Siamese encoder on CIFAR-10.

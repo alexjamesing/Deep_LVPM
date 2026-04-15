@@ -356,3 +356,38 @@ def plot_correlation_graph(
         plt.show()
 
     return fig, axes
+
+
+def plot_training_history(
+    history: dict,
+    save_path=None,
+    dpi=300,
+    show=True,
+):
+    """Plot train/val curves for loss, corr, mse, and redundancy."""
+    metrics = [
+        ("total_loss", "Loss"),
+        ("cross_metric", "Correlation"),
+        ("mse_loss", "MSE"),
+        ("redundancy", "Redundancy"),
+    ]
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    epochs = range(1, len(history["total_loss"]) + 1)
+    for ax, (key, label) in zip(axes.flatten(), metrics):
+        ax.plot(epochs, history[key], label="train")
+        if f"val_{key}" in history:
+            ax.plot(epochs, history[f"val_{key}"], label="val")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel(label)
+        ax.set_title(label)
+        ax.legend()
+    fig.suptitle("Training Progress", fontsize=14)
+    fig.tight_layout()
+
+    if save_path is not None:
+        fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
+
+    if show:
+        plt.show()
+
+    return fig, axes

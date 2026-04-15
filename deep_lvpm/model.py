@@ -47,7 +47,7 @@ import numpy as np
 import pydot
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, Dataset, TensorDataset
 
 from deep_lvpm.layers.FactorLayer import FactorLayer
 from deep_lvpm.layers.ZCALayer import ZCALayer
@@ -433,7 +433,7 @@ class StructuralModel(nn.Module):
 
     def fit(
         self,
-        X_train: list,
+        X_train: list | Dataset,
         batch_size: int = 32,
         epochs: int = 10,
         verbose: bool | int = True,
@@ -465,14 +465,19 @@ class StructuralModel(nn.Module):
         if self.optimizers is None:
             raise RuntimeError("Call compile(optimizer) before fit().")
 
-        X_train = self._to_tensor_list(X_train, "X_train")
-        if X_val is not None:
-            X_val = self._to_tensor_list(X_val, "X_val")
-            self._check_views_consistent(X_train, X_val)
+        if isinstance(X_train, Dataset):
+            dataset = X_train
+            if X_val is not None:
+                X_val = self._to_tensor_list(X_val, "X_val")
+        else:
+            X_train = self._to_tensor_list(X_train, "X_train")
+            if X_val is not None:
+                X_val = self._to_tensor_list(X_val, "X_val")
+                self._check_views_consistent(X_train, X_val)
+            dataset = TensorDataset(*X_train)
 
         self.to(self.device)
 
-        dataset = TensorDataset(*X_train)
         # drop_last=True prevents single-sample final batches that break BatchNorm
         loader = DataLoader(
             dataset, batch_size=batch_size, shuffle=True, drop_last=True

@@ -5,6 +5,9 @@ with one-hot class labels using ZCA orthogonalisation.
 Requires: torchvision
 """
 
+from datetime import datetime
+from pathlib import Path as _Path
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -14,6 +17,15 @@ from torchvision import datasets
 from torchvision import transforms as T
 
 from deep_lvpm.model import StructuralModel
+from deep_lvpm.plot import plot_training_history
+
+# ------------------------------------------------------------------
+# Log directory
+# ------------------------------------------------------------------
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+log_dir = _Path("logs") / f"{timestamp}_run_mnist"
+log_dir.mkdir(parents=True, exist_ok=True)
+print(f"Logging outputs to: {log_dir.resolve()}")
 
 
 def _load_mnist():
@@ -119,7 +131,7 @@ opt_list = [torch.optim.Adam(m.parameters(), lr=1e-5) for m in model.model_list]
 model.compile(optimizer=opt_list)
 
 
-model.fit(
+history = model.fit(
     X_train,
     batch_size=256,
     epochs=20,
@@ -161,4 +173,11 @@ for i in range(y_sub.shape[1]):
     plt.scatter(pts[:, 0], pts[:, 1], label=f"Category {i + 1}")
 plt.title("t-SNE projection of MNIST image DLVs")
 plt.legend()
-plt.show()
+tsne_path = log_dir / "tsne_image_dlvs.png"
+plt.savefig(tsne_path, dpi=150, bbox_inches="tight")
+plt.close()
+print(f"Saved t-SNE plot to {tsne_path}")
+
+history_path = log_dir / "training_history.png"
+plot_training_history(history, save_path=history_path, show=False)
+print(f"Saved training history plot to {history_path}")
