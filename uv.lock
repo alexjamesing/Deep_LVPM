@@ -153,24 +153,17 @@ dependencies = [
     { name = "tqdm" },
 ]
 
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-]
-
 [package.metadata]
 requires-dist = [
     { name = "matplotlib", specifier = ">=3.9" },
     { name = "pydot", specifier = ">=4.0" },
     { name = "pytest", specifier = ">=9.0.2" },
-    { name = "pytest", marker = "extra == 'dev'" },
     { name = "scikit-learn", specifier = ">=1.6" },
     { name = "torch", specifier = ">=2.0" },
     { name = "torchaudio" },
     { name = "torchvision" },
     { name = "tqdm", specifier = ">=4.67.3" },
 ]
-provides-extras = ["dev"]
 
 [[package]]
 name = "exceptiongroup"

@@ -60,15 +60,11 @@ class ResidualBlock(nn.Module):
     def __init__(
         self,
         input_dim: int,
-        kernel_reg_l1: float = 0.01,
-        kernel_reg_l2: float = 0.01,
         dropout_rate: float = 0.5,
     ) -> None:
         super().__init__()
-        self.kernel_reg_l1 = kernel_reg_l1
-        self.kernel_reg_l2 = kernel_reg_l2
         self.linear1 = nn.Linear(input_dim, input_dim)
-        self.bn = nn.BatchNorm1d(input_dim)
+        self.bn = nn.BatchNorm1d(input_dim, momentum=0.01, eps=0.001)
         self.relu = nn.ReLU()
         self.linear2 = nn.Linear(input_dim, input_dim)
         self.dropout = nn.Dropout(dropout_rate)
@@ -88,21 +84,6 @@ class ResidualBlock(nn.Module):
         out = out + x
         out = self.dropout(out)
         return out
-
-    def regularization_loss(self) -> torch.Tensor:
-        device = self.linear1.weight.device
-        dtype = self.linear1.weight.dtype
-        penalty = torch.zeros((), device=device, dtype=dtype)
-        if self.kernel_reg_l1:
-            penalty = penalty + self.kernel_reg_l1 * (
-                self.linear1.weight.abs().sum() + self.linear2.weight.abs().sum()
-            )
-        if self.kernel_reg_l2:
-            penalty = penalty + self.kernel_reg_l2 * (
-                (self.linear1.weight**2).sum() + (self.linear2.weight**2).sum()
-            )
-        return penalty
-
 
 def residual_encoder(input_dim: int, name: str = "residual_enc") -> nn.Sequential:
     """Wrap a ResidualBlock in a Sequential and tag with n_inputs."""
@@ -138,7 +119,7 @@ Path = np.array(
 )
 
 batch_size = 256
-epochs = 200
+epochs = 300
 tot_num = rnaseq.shape[0]
 
 regularizer_list = [(0.001, 0.001)] * len(model_list)
@@ -161,7 +142,27 @@ init_lr, final_lr = 1e-4, 1e-5
 gamma = (final_lr / init_lr) ** (1.0 / epochs)
 
 model.build(X_train)
-opt_list = [torch.optim.Adam(m.parameters(), lr=init_lr) for m in model.model_list]
+
+
+def _make_optimizer(full_model: nn.Sequential, lr: float) -> torch.optim.Adam:
+    # After build: full_model = nn.Sequential(user_encoder, FactorLayer)
+    # Apply weight_decay only to encoder linear weights to approximate
+    # Keras kernel_regularizer=l1_l2(l2=0.01): weight_decay=2*l2=0.02.
+    # (L1 cannot be replicated via weight_decay.)
+    encoder = full_model[0]
+    factor = full_model[1]
+    lin_w = [p for n, p in encoder.named_parameters()
+             if n.endswith(".weight") and "bn" not in n]
+    other = [p for n, p in encoder.named_parameters()
+             if not (n.endswith(".weight") and "bn" not in n)]
+    return torch.optim.Adam([
+        {"params": lin_w, "weight_decay": 0.02},
+        {"params": other, "weight_decay": 0.0},
+        {"params": list(factor.parameters()), "weight_decay": 0.0},
+    ], lr=lr)
+
+
+opt_list = [_make_optimizer(m, init_lr) for m in model.model_list]
 schedulers = [
     torch.optim.lr_scheduler.ExponentialLR(opt, gamma=gamma) for opt in opt_list
 ]
