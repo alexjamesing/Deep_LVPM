@@ -381,6 +381,7 @@ def plot_training_history(
         ax.set_ylabel(label)
         ax.set_title(label)
         ax.legend()
+        ax.grid(True, linestyle="--", alpha=0.5)
     fig.suptitle("Training Progress", fontsize=14)
     fig.tight_layout()
 
