@@ -301,6 +301,7 @@ def plot_correlation_chord_row(
     min_corr=0.2,
     first_n_dims=None,
     panel_size=(4, 4),
+    max_cols=8,
     node_cmap_name="Pastel1",   # pastel, seaborn-like
     figure_title=None,
     show_edge_labels=False,
@@ -309,7 +310,7 @@ def plot_correlation_chord_row(
     show=True,
 ):
     """
-    Plot a row of chord diagrams, one for each correlation matrix.
+    Plot a grid of chord diagrams, one for each correlation matrix.
 
     Parameters
     ----------
@@ -322,7 +323,8 @@ def plot_correlation_chord_row(
         Absolute correlation threshold; smaller values are not drawn.
     panel_size : tuple
         Size of each individual chord plot (width, height).
-        Total figure width is panel_size[0] * number_of_matrices.
+    max_cols : int
+        Maximum number of panels to place in a single row.
     node_cmap_name : str
         Name of the matplotlib colormap used to generate node colors.
     figure_title : str or None
@@ -362,14 +364,14 @@ def plot_correlation_chord_row(
         raise ValueError("labels length must match matrix dimension.")
 
     n_panels = len(corr_list)
+    max_cols = max(1, int(max_cols))
+    n_cols = min(n_panels, max_cols)
+    n_rows = int(np.ceil(n_panels / n_cols))
 
-    # Create figure with one row of subplots
-    fig_width = panel_size[0] * n_panels
-    # Add a bit of extra vertical space for the global title
-    fig_height = panel_size[1] + 0.8
-    fig, axes = plt.subplots(1, n_panels, figsize=(fig_width, fig_height))
-    if n_panels == 1:
-        axes = np.array([axes])
+    fig_width = panel_size[0] * n_cols
+    fig_height = panel_size[1] * n_rows + 0.8
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height))
+    axes = np.atleast_1d(axes).reshape(n_rows, n_cols)
 
     # Shared geometry for all chord plots
     angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
@@ -442,7 +444,8 @@ def plot_correlation_chord_row(
         return midpoint
 
     # Draw each chord plot in its own axis
-    for idx, (corr, ax) in enumerate(zip(corr_list, axes)):
+    flat_axes = axes.reshape(-1)
+    for idx, (corr, ax) in enumerate(zip(corr_list, flat_axes)):
         ax.set_aspect("equal")
         ax.axis("off")
 
@@ -513,6 +516,9 @@ def plot_correlation_chord_row(
 
         # Per-panel title like DLV1, DLV2, ...
         ax.set_title(f"DLV{idx + 1}", fontsize=14, pad=20)
+
+    for ax in flat_axes[n_panels:]:
+        ax.axis("off")
 
     # Add a global, centered title if requested
     if figure_title is not None:

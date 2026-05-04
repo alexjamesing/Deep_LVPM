@@ -13,7 +13,7 @@ from importlib import resources
 # import keras_tuner as kt  # temporarily disabled
 
 import deep_lvpm 
-from deep_lvpm.model import StructuralModel
+from deep_lvpm.multi_model import DGCCA
 # from deep_lvpm.tuner import Tuner  # temporarily disabled
 
 tf.config.run_functions_eagerly(False)   # default graph mode for final training
@@ -79,24 +79,13 @@ view_models = [
 ]
 
 
-ndims = 5    # number of latent factors
-
-Path = np.array(
-    [
-        [0, 1, 0, 0, 0],
-        [1, 0, 1, 1, 1],
-        [0, 1, 0, 0, 0],
-        [0, 1, 0, 0, 0],
-        [0, 1, 0, 0, 0],
-    ],
-    dtype="float32",
-)
+ndims = 1 # number of latent factors
 
 batch_size  = 256
-epochs      = 500
+epochs      = 300
 total_steps = int(rnaseq.shape[0] / batch_size) * epochs
 
-init_lr, final_lr = 1e-5, 1e-5
+init_lr, final_lr = 1e-6, 1e-7
 
 lr_schedule = optimizers.schedules.ExponentialDecay(
     initial_learning_rate=init_lr,
@@ -105,27 +94,21 @@ lr_schedule = optimizers.schedules.ExponentialDecay(
     staircase=False
 )
 
-tot_num = rnaseq.shape[0] ## This is the total number of samples under analysis and is needed by DLVPM
+tot_num = rnaseq.shape[0]
 
-
-structural_kwargs = dict(
-    Path=Path,
-    tot_num=tot_num,
+dgcca_kwargs = dict(
     ndims=ndims,
-    orthogonalization='zca',
-    diag_offset=1e-6,
-    momentum=0.95,
-    # sparse_l1_list=[1e-4] * len(view_models),
     regularizer_list=[None] * len(view_models),
-    order=True
+    gcca_reg=1e-3,
+    is_siamese=False,
 )
 
-# Build StructuralModel directly and train for 200 epochs
+# Build DGCCA directly and train.
 opt_list = [keras.optimizers.Adam(learning_rate=lr_schedule) for _ in range(len(view_models))]
 
-best_model = StructuralModel(
+best_model = DGCCA(
     model_list=view_models,
-    **structural_kwargs,
+    **dgcca_kwargs,
 )
 
 best_model.compile(opt_list)
@@ -135,7 +118,6 @@ best_model.compile(opt_list)
 def check_internal_vs_posthoc_rotation(model, X, batch_size=None, label="train"):
     import numpy as np
 
-    # Predict with final weights (inference mode)
     Y = model.predict(X, batch_size=batch_size, verbose=0)  # shape: (N, D, K)
 
     # Build consensus and its centered covariance
@@ -186,10 +168,12 @@ def check_internal_vs_posthoc_rotation(model, X, batch_size=None, label="train")
     }
 
 
-best_model.fit(X_full, batch_size=batch_size, epochs=300, verbose=True)
+best_model.fit(X_full, batch_size=batch_size, epochs=epochs, verbose=True)
+opt_list = [keras.optimizers.Adam(learning_rate=1e-5) for _ in range(len(view_models))]
+best_model.compile(opt_list)
+best_model.fit(X_full, batch_size=batch_size, epochs=50, verbose=True)
 _rot_metrics = check_internal_vs_posthoc_rotation(best_model, X_full, batch_size=batch_size, label="fit-data")
 
-# best_model.order=False
 
 # best_model.fit(X_full, batch_size=batch_size, epochs=5, verbose=True)
 
@@ -229,7 +213,7 @@ print(corrmean)
 
 mean_corr_test = best_model.evaluate(X_arr_test)
 
-print('The mean correlation between data-types connected by the path model is r=' + str(mean_corr_test[1]))
+print('The mean correlation across data types is r=' + str(mean_corr_test[1]))
 
 test_DLVs = best_model.predict(X_arr_test) ## Here, we obtain the full set of test_DLVs
 
@@ -240,7 +224,7 @@ print(np.corrcoef(test_DLVs[:,1,:].T))
 
 corr_mat = best_model.calculate_corrmat(test_DLVs) # This outputs correlation matrices between different data types included in the model
 
-corrmean = [keras.ops.mean(a) for a in corr_mat]
+corrmean = [np.mean(a) for a in corr_mat]
 print(corrmean)
 
 from deep_lvpm.plot import plot_correlation_chord_row

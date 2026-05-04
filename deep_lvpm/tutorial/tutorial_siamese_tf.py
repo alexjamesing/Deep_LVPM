@@ -311,7 +311,7 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import LinearSVC
-from deep_lvpm.model import StructuralModel
+from deep_lvpm.multi_model import DGCCA
 
 # Keep computations in float32 for stability with the siamese objective.
 mixed_precision.set_global_policy("float32")
@@ -402,9 +402,9 @@ val_ds = make_siamese_views_dataset(
     x_val, batch_size=BATCH_SIZE, shuffle=False, training=True
 )
 
-# Build the shared encoder used by both branches of the structural model.
+# Build the shared encoder used by both branches of the DGCCA model.
 WEIGHT_DECAY = 0
-NDIMS = 512
+NDIMS = 256
 
 CIFAR_image_model = keras.Sequential(
     [
@@ -441,22 +441,16 @@ CIFAR_image_model = keras.Sequential(
     name="cifar_image_model",
 )
 
-# Build siamese structural model with shared encoder replicas.
+# Build siamese DGCCA model with shared encoder replicas.
 model_list = [CIFAR_image_model, CIFAR_image_model]
-adjacency = tf.constant([[0, 1], [1, 0]], dtype="float32")
 regularizers = [keras.regularizers.l2(WEIGHT_DECAY),keras.regularizers.l2(WEIGHT_DECAY)]
 
-dlvpm_model = StructuralModel(
-    adjacency,
-    model_list,
-    regularizers,
-    x_train.shape[0],
-    NDIMS,
-    orthogonalization="zca",
-    train_DLV=True,
+dlvpm_model = DGCCA(
+    model_list=model_list,
+    regularizer_list=regularizers,
+    ndims=NDIMS,
+    gcca_reg=1e-3,
     is_siamese=True,
-    diag_offset=1e-12,
-    order=True
 )
 
 # Compile with branch-specific optimisers.
@@ -467,8 +461,9 @@ optimizers = [
 dlvpm_model.compile(optimizers)
 
 # Train the siamese model and monitor validation performance.
-EPOCHS = 100
+EPOCHS = 10
 dlvpm_model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, verbose=True)
+
 
 
 def remove_last_layers(model: keras.Model, n: int = 1, name: str | None = None) -> keras.Model:
@@ -487,11 +482,8 @@ def remove_last_layers(model: keras.Model, n: int = 1, name: str | None = None) 
     )
 
 
-# Strip the projection head before exporting embeddings.
-# image_model = remove_last_layers(dlvpm_model.model_list[0], n=4)
-image_model = dlvpm_model.model_list[0]
-
 # Generate embeddings for downstream linear evaluation.
+image_model = dlvpm_model.model_list[0]
 train_dlvs = image_model.predict(x_train, batch_size=32, verbose=1)
 test_dlvs = image_model.predict(x_test, batch_size=32, verbose=1)
 
@@ -520,3 +512,7 @@ print("Classification report:")
 print(classification_report(y_test_cat, predictions, digits=4))
 print("Confusion matrix:")
 print(confusion_matrix(y_test_cat, predictions))
+
+test_dlvs_pair = dlvpm_model.predict(test_ds)
+corr_mat = dlvpm_model.calculate_corrmat(test_dlvs_pair)
+corrmean = [np.mean(a) for a in corr_mat]

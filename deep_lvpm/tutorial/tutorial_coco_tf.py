@@ -25,8 +25,14 @@ except Exception as exc:
     ) from exc
 
 import numpy as np
+import matplotlib.pyplot as plt
 import keras
 from keras import layers, ops
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import LinearSVC
+from deep_lvpm.plot import plot_correlation_chord_row
 
 try:
     import fiftyone as fo
@@ -36,9 +42,9 @@ except Exception as exc:
         "This tutorial requires FiftyOne. Install it with: python -m pip install fiftyone"
     ) from exc
 
+from deep_lvpm.model import SecondOrderStructuralModel
 from deep_lvpm.model import StructuralModel
-from deep_lvpm.multi_model import CLIP, VICReg
-from deep_lvpm.plot import plot_correlation_chord_row
+from deep_lvpm.multi_model import CLIP, VICReg, LeJEPA
 
 
 if keras.backend.backend() != "tensorflow":
@@ -62,18 +68,21 @@ TRANSFORMER_HEADS = 4
 TRANSFORMER_FF_DIM = 512
 NUM_TRANSFORMER_BLOCKS = 2
 TEXT_DROPOUT = 0.10
-NDIMS = env_int("DLVPM_COCO_NDIMS", 32)
+NDIMS = env_int("DLVPM_COCO_NDIMS", 128)
 BATCH_SIZE = env_int("DLVPM_COCO_BATCH_SIZE", 512)
 ORTHOG_WEIGHT = 1e-2
-LEARNING_RATE_START = 1e-4
+LEARNING_RATE_START = 1e-3
 LEARNING_RATE_END = 1e-4
 LEARNING_RATE_WARMUP_EPOCHS = 0
-BENCHMARK_EPOCHS = env_int("DLVPM_COCO_EPOCHS", 100)
+BENCHMARK_EPOCHS = env_int("DLVPM_COCO_EPOCHS", 10)
 BENCHMARK_TRAIN_SAMPLES = env_int("DLVPM_COCO_TRAIN_SAMPLES", 20000)
 BENCHMARK_VAL_SAMPLES = env_int("DLVPM_COCO_VAL_SAMPLES", 5000)
 BENCHMARK_SAMPLES = env_int("DLVPM_COCO_TEST_SAMPLES", 2048)
 RUN_BASELINES = False
+RUN_CIFAR = True
 RETRIEVAL_KS = (1, 5, 10)
+RANK_BOOTSTRAP_SAMPLES = env_int("DLVPM_COCO_RANK_BOOTSTRAPS", 1000)
+CIFAR_BATCH_SIZE = env_int("DLVPM_COCO_CIFAR_BATCH_SIZE", 256)
 
 N_VIEWS = NUM_CAPTION_VIEWS + 1
 
@@ -337,13 +346,13 @@ text_vectorizer.adapt(caption_ds)
 def build_image_encoder(ndims: int) -> keras.Model:
     image_inputs = keras.Input(shape=(IMG_SIZE, IMG_SIZE, 3), name="image")
     x_image = layers.Rescaling(1.0 / 255.0, name="image_rescaling")(image_inputs)
-    x_image = layers.Conv2D(32, 3, padding="same", activation="relu", name="conv1")(x_image)
+    x_image = layers.Conv2D(128, 3, padding="same", activation="relu", name="conv1")(x_image)
     x_image = layers.MaxPooling2D(pool_size=2, name="pool1")(x_image)
-    x_image = layers.Conv2D(64, 3, padding="same", activation="relu", name="conv2")(x_image)
+    x_image = layers.Conv2D(256, 3, padding="same", activation="relu", name="conv2")(x_image)
     x_image = layers.MaxPooling2D(pool_size=2, name="pool2")(x_image)
-    x_image = layers.Conv2D(128, 3, padding="same", activation="relu", name="conv3")(x_image)
+    x_image = layers.Conv2D(512, 3, padding="same", activation="relu", name="conv3")(x_image)
     x_image = layers.MaxPooling2D(pool_size=2, name="pool3")(x_image)
-    x_image = layers.Conv2D(256, 3, padding="same", activation="relu", name="conv4")(x_image)
+    x_image = layers.Conv2D(1024, 3, padding="same", activation="relu", name="conv4")(x_image)
     image_features = layers.GlobalAveragePooling2D(name="image_pool")(x_image)
     image_outputs = layers.Dense(256, activation="relu", name="image_projection")(image_features)
     return keras.Model(image_inputs, image_outputs, name="coco_image_cnn_tf")
@@ -449,6 +458,32 @@ def collect_image_text_embeddings(
     return image_all, text_all
 
 
+def make_cifar_image_dataset(
+    images: np.ndarray,
+    batch_size: int = CIFAR_BATCH_SIZE,
+) -> tf.data.Dataset:
+    dataset = tf.data.Dataset.from_tensor_slices(images)
+
+    def preprocess(image):
+        image = tf.cast(image, tf.float32)
+        image = tf.image.resize(image, [IMG_SIZE, IMG_SIZE])
+        return image
+
+    dataset = dataset.map(preprocess, num_parallel_calls=AUTOTUNE)
+    dataset = dataset.batch(batch_size, drop_remainder=False)
+    return dataset.prefetch(AUTOTUNE)
+
+
+def collect_cifar_embeddings(
+    image_model: keras.Model,
+    images: np.ndarray,
+    batch_size: int = CIFAR_BATCH_SIZE,
+) -> np.ndarray:
+    image_ds = make_cifar_image_dataset(images, batch_size=batch_size)
+    embeddings = image_model.predict(image_ds, verbose=1)
+    return np.asarray(embeddings)
+
+
 def aggregate_caption_groups(text_embeddings: np.ndarray) -> np.ndarray:
     if text_embeddings.ndim != 3 or text_embeddings.shape[1] != NUM_CAPTION_VIEWS:
         raise ValueError(
@@ -469,6 +504,14 @@ def retrieval_metrics(
     text_embeddings: np.ndarray,
     ks: tuple[int, ...] = RETRIEVAL_KS,
 ) -> dict[str, float]:
+    i2g_rank, g2i_rank = retrieval_rank_arrays(image_embeddings, text_embeddings)
+    return retrieval_metrics_from_ranks(i2g_rank, g2i_rank, ks=ks)
+
+
+def retrieval_rank_arrays(
+    image_embeddings: np.ndarray,
+    text_embeddings: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
     image_embeddings = l2_normalize(image_embeddings.astype("float32"))
     group_embeddings = aggregate_caption_groups(text_embeddings.astype("float32"))
 
@@ -481,6 +524,15 @@ def retrieval_metrics(
 
     g2i_order = np.argsort(-group_similarity.T, axis=1)
     g2i_rank = np.argmax(g2i_order == target_index[:, None], axis=1) + 1
+
+    return i2g_rank, g2i_rank
+
+
+def retrieval_metrics_from_ranks(
+    i2g_rank: np.ndarray,
+    g2i_rank: np.ndarray,
+    ks: tuple[int, ...] = RETRIEVAL_KS,
+) -> dict[str, float]:
 
     metrics: dict[str, float] = {}
     for k in ks:
@@ -500,6 +552,80 @@ def print_retrieval_row(method_name: str, metrics: dict[str, float]) -> None:
     row.append(f"{metrics['i2g_median_rank']:.1f}")
     row.append(f"{metrics['g2i_median_rank']:.1f}")
     print(" | ".join(row))
+
+
+def evaluate_retrieval_result(
+    image_embeddings: np.ndarray,
+    text_embeddings: np.ndarray,
+) -> tuple[dict[str, float], dict[str, np.ndarray]]:
+    i2g_rank, g2i_rank = retrieval_rank_arrays(image_embeddings, text_embeddings)
+    metrics = retrieval_metrics_from_ranks(i2g_rank, g2i_rank)
+    rank_data = {
+        "i2g_rank": i2g_rank,
+        "g2i_rank": g2i_rank,
+    }
+    return metrics, rank_data
+
+
+def bootstrap_combined_rank_ci(
+    i2g_rank: np.ndarray,
+    g2i_rank: np.ndarray,
+    n_bootstrap: int = RANK_BOOTSTRAP_SAMPLES,
+    seed: int = SEED,
+) -> tuple[float, float, float]:
+    rng = np.random.default_rng(seed)
+    num_samples = len(i2g_rank)
+    bootstrap_scores = np.empty(n_bootstrap, dtype="float64")
+
+    for bootstrap_index in range(n_bootstrap):
+        sample_index = rng.integers(0, num_samples, size=num_samples)
+        bootstrap_scores[bootstrap_index] = 0.5 * (
+            np.mean(i2g_rank[sample_index]) + np.mean(g2i_rank[sample_index])
+        )
+
+    point_estimate = 0.5 * (float(np.mean(i2g_rank)) + float(np.mean(g2i_rank)))
+    lower = float(np.percentile(bootstrap_scores, 2.5))
+    upper = float(np.percentile(bootstrap_scores, 97.5))
+    return point_estimate, lower, upper
+
+
+def plot_rank_benchmark(
+    method_names: list[str],
+    rank_results: dict[str, dict[str, np.ndarray]],
+) -> None:
+    summary_rows = []
+    for method_name in method_names:
+        rank_data = rank_results[method_name]
+        point_estimate, lower, upper = bootstrap_combined_rank_ci(
+            rank_data["i2g_rank"],
+            rank_data["g2i_rank"],
+        )
+        summary_rows.append((method_name, point_estimate, lower, upper))
+
+    summary_rows.sort(key=lambda row: row[1])
+    sorted_methods = [row[0] for row in summary_rows]
+    sorted_points = np.array([row[1] for row in summary_rows], dtype="float64")
+    lower_errors = sorted_points - np.array([row[2] for row in summary_rows], dtype="float64")
+    upper_errors = np.array([row[3] for row in summary_rows], dtype="float64") - sorted_points
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    y_positions = np.arange(len(sorted_methods))
+    ax.barh(
+        y_positions,
+        sorted_points,
+        xerr=np.vstack([lower_errors, upper_errors]),
+        color="#8fbcd4",
+        edgecolor="black",
+        capsize=4,
+    )
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(sorted_methods)
+    ax.invert_yaxis()
+    ax.set_xlabel("Bootstrapped Mean Retrieval Rank (lower is better)")
+    ax.set_title("COCO Retrieval Benchmark by Method")
+    ax.grid(axis="x", linestyle="--", alpha=0.3)
+    fig.tight_layout()
+    plt.show()
 
 
 print("\nRunning retrieval benchmark on held-out COCO image/caption groups...")
@@ -542,6 +668,7 @@ else:
     print(f"Training DLVPM only for {BENCHMARK_EPOCHS} epochs.")
 
 benchmark_results: dict[str, dict[str, float]] = {}
+benchmark_rank_results: dict[str, dict[str, np.ndarray]] = {}
 method_order = ["DLVPM"]
 steps_per_epoch = max(1, benchmark_train_n // BATCH_SIZE)
 warmup_steps = max(1, steps_per_epoch * LEARNING_RATE_WARMUP_EPOCHS)
@@ -552,6 +679,7 @@ lr_schedule = keras.optimizers.schedules.PiecewiseConstantDecay(
 
 print("Training DLVPM benchmark model...")
 dlvpm_benchmark_models = build_model_list(NDIMS)
+
 dlvpm_benchmark = StructuralModel(
     Path=Path,
     model_list=dlvpm_benchmark_models,
@@ -561,14 +689,18 @@ dlvpm_benchmark = StructuralModel(
     orthogonalization="zca",
     diag_offset=1e-6,
     train_DLV=True,
-    momentum=0.95
-    # order=True,
-    # order_loss_weight=1,
+    momentum=0.95,
+    order=True,
+    order_type="callback",
+    # order_association_cutoff=0.99,
 )
 dlvpm_optimizers = [
     keras.optimizers.Adam(learning_rate=lr_schedule, clipnorm=1.0)
     for _ in dlvpm_benchmark_models
 ]
+
+
+
 dlvpm_benchmark.compile(dlvpm_optimizers)
 dlvpm_benchmark.fit(
     benchmark_train_ds,
@@ -576,33 +708,50 @@ dlvpm_benchmark.fit(
     epochs=BENCHMARK_EPOCHS,
     verbose=True,
 )
+
+
+FINE_TUNE_EPOCHS = 10
+
+
+# Re-compile so Keras respects the new trainable flags.
+# Reuse the existing optimizers if possible.
+dlvpm_optimizers = [
+    keras.optimizers.Adam(learning_rate=1e-5, clipnorm=1.0)
+    for _ in dlvpm_benchmark_models
+]
+dlvpm_benchmark.compile(dlvpm_optimizers)
+
+dlvpm_benchmark.order=False
+
+dlvpm_benchmark.attention_mse=False
+
+dlvpm_association_cutoff=False
+
+dlvpm_benchmark.fit(
+    benchmark_train_ds,
+    validation_data=benchmark_val_ds,
+    epochs=FINE_TUNE_EPOCHS,
+    verbose=True,
+)
+
 dlvpm_img, dlvpm_txt = collect_image_text_embeddings(
     dlvpm_benchmark,
     benchmark_test_ds,
     max_samples=benchmark_test_n,
 )
-benchmark_results["DLVPM"] = retrieval_metrics(dlvpm_img, dlvpm_txt)
+benchmark_results["DLVPM"], benchmark_rank_results["DLVPM"] = evaluate_retrieval_result(
+    dlvpm_img,
+    dlvpm_txt,
+)
 
-train_DLVs = dlvpm_benchmark.predict(benchmark_train_ds)
-corr_mat = dlvpm_benchmark.calculate_corrmat(train_DLVs)
-
-corrmean = [keras.ops.sum(keras.ops.multiply(a,Path)) for a in corr_mat]
-print(corrmean)
-
-
-test_DLVs = dlvpm_benchmark.predict(benchmark_test_ds)
-corr_mat = dlvpm_benchmark.calculate_corrmat(test_DLVs)
-
-corrmean = [keras.ops.sum(keras.ops.multiply(a,Path)) for a in corr_mat]
-print(corrmean)
-
-fig, ax = plot_correlation_chord_row(
-    corr_mat,
+dlvpm_test_dlvs = dlvpm_benchmark.predict(benchmark_test_ds)
+dlvpm_corr_mat = dlvpm_benchmark.calculate_corrmat(dlvpm_test_dlvs)
+plot_correlation_chord_row(
+    dlvpm_corr_mat,
     ["Image", "Caption 1", "Caption 2", "Caption 3", "Caption 4", "Caption 5"],
-    first_n_dims=5,
     min_corr=0,
     node_cmap_name="Pastel1",
-    figure_title="Correlation Plots Between COCO Images and Captions",
+    figure_title="COCO DLVPM Cross-View Correlations",
     show_edge_labels=True,
     dpi=300,
     show=True,
@@ -633,7 +782,10 @@ if RUN_BASELINES:
         benchmark_test_ds,
         max_samples=benchmark_test_n,
     )
-    benchmark_results["CLIP"] = retrieval_metrics(clip_img, clip_txt)
+    benchmark_results["CLIP"], benchmark_rank_results["CLIP"] = evaluate_retrieval_result(
+        clip_img,
+        clip_txt,
+    )
     method_order.append("CLIP")
 
     print("Training VICReg baseline...")
@@ -661,8 +813,42 @@ if RUN_BASELINES:
         benchmark_test_ds,
         max_samples=benchmark_test_n,
     )
-    benchmark_results["VICReg"] = retrieval_metrics(vic_img, vic_txt)
+    benchmark_results["VICReg"], benchmark_rank_results["VICReg"] = evaluate_retrieval_result(
+        vic_img,
+        vic_txt,
+    )
     method_order.append("VICReg")
+
+    print("Training LeJEPA baseline...")
+    lejepa_model_list = build_model_list(NDIMS)
+    lejepa_model = LeJEPA(
+        Path=Path,
+        model_list=lejepa_model_list,
+        regularizer_list=[None for _ in lejepa_model_list],
+        ndims=NDIMS,
+        is_siamese=False,
+    )
+    lejepa_optimizers = [
+        keras.optimizers.Adam(learning_rate=lr_schedule, clipnorm=1.0)
+        for _ in lejepa_model_list
+    ]
+    lejepa_model.compile(lejepa_optimizers)
+    lejepa_model.fit(
+        benchmark_train_ds,
+        validation_data=benchmark_val_ds,
+        epochs=BENCHMARK_EPOCHS,
+        verbose=True,
+    )
+    lejepa_img, lejepa_txt = collect_image_text_embeddings(
+        lejepa_model,
+        benchmark_test_ds,
+        max_samples=benchmark_test_n,
+    )
+    benchmark_results["LeJEPA"], benchmark_rank_results["LeJEPA"] = evaluate_retrieval_result(
+        lejepa_img,
+        lejepa_txt,
+    )
+    method_order.append("LeJEPA")
 
 print(
     "\nGroup-level retrieval benchmark (higher Top-K accuracy is better, lower median rank is better):"
@@ -675,3 +861,44 @@ print(" | ".join(header))
 print("-" * 100)
 for method in method_order:
     print_retrieval_row(method, benchmark_results[method])
+
+plot_rank_benchmark(method_order, benchmark_rank_results)
+
+
+if RUN_CIFAR:
+    print("\nRunning downstream CIFAR-10 evaluation on the trained COCO image encoder...")
+
+    (x_train_cifar, y_train_cat), (x_test_cifar, y_test_cat) = keras.datasets.cifar10.load_data()
+    y_train_cat = y_train_cat.squeeze()
+    y_test_cat = y_test_cat.squeeze()
+
+    image_model = dlvpm_benchmark.model_list[0]
+    train_dlvs = collect_cifar_embeddings(
+        image_model,
+        x_train_cifar,
+        batch_size=CIFAR_BATCH_SIZE,
+    )
+    test_dlvs = collect_cifar_embeddings(
+        image_model,
+        x_test_cifar,
+        batch_size=CIFAR_BATCH_SIZE,
+    )
+
+    print(f"Train DLVs shape: {train_dlvs.shape}")
+    print(f"Test  DLVs shape: {test_dlvs.shape}")
+
+    svm_clf = Pipeline(
+        [
+            ("scaler", StandardScaler(with_mean=True)),
+            ("svm", LinearSVC(C=1.0, max_iter=10000, random_state=42)),
+        ]
+    )
+    svm_clf.fit(train_dlvs, y_train_cat)
+    predictions = svm_clf.predict(test_dlvs)
+    accuracy = accuracy_score(y_test_cat, predictions)
+
+    print(f"\nSVM accuracy on CIFAR-10 test set: {accuracy:.4f}\n")
+    print("Classification report:")
+    print(classification_report(y_test_cat, predictions, digits=4))
+    print("Confusion matrix:")
+    print(confusion_matrix(y_test_cat, predictions))

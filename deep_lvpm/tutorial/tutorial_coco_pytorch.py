@@ -28,6 +28,7 @@ except Exception as exc:
     ) from exc
 
 import numpy as np
+import matplotlib.pyplot as plt
 from PIL import Image
 import keras
 from keras import layers
@@ -49,8 +50,7 @@ except Exception as exc:
     ) from exc
 
 from deep_lvpm.model import StructuralModel
-from deep_lvpm.multi_model import CLIP, VICReg
-from deep_lvpm.plot import plot_correlation_chord_row
+from deep_lvpm.multi_model import CLIP, VICReg, LeJEPA
 
 
 if keras.backend.backend() != "torch":
@@ -74,7 +74,7 @@ MAX_TOKENS = 32
 TEXT_MODEL_NAME = os.environ.get("DLVPM_COCO_TEXT_MODEL", "distilbert-base-uncased")
 TEXT_DROPOUT = 0.10
 NUM_WORKERS = env_int("DLVPM_COCO_NUM_WORKERS", 0)
-NDIMS = env_int("DLVPM_COCO_NDIMS", 256)
+NDIMS = env_int("DLVPM_COCO_NDIMS", 512)
 BATCH_SIZE = env_int("DLVPM_COCO_BATCH_SIZE", 512)
 LEARNING_RATE_START = 1e-5
 LEARNING_RATE_END = 1e-4
@@ -85,6 +85,7 @@ BENCHMARK_VAL_SAMPLES = env_int("DLVPM_COCO_VAL_SAMPLES", 5000)
 BENCHMARK_SAMPLES = env_int("DLVPM_COCO_TEST_SAMPLES", 2048)
 RUN_BASELINES = False
 RETRIEVAL_KS = (1, 5, 10)
+RANK_BOOTSTRAP_SAMPLES = env_int("DLVPM_COCO_RANK_BOOTSTRAPS", 1000)
 
 N_VIEWS = NUM_CAPTION_VIEWS + 1
 # Path = np.ones((N_VIEWS, N_VIEWS), dtype="float32") - np.eye(N_VIEWS, dtype="float32")
@@ -680,7 +681,15 @@ def retrieval_metrics(
     text_embeddings: np.ndarray,
     ks: tuple[int, ...] = RETRIEVAL_KS,
 ) -> dict[str, float]:
-    """Compute group-level retrieval metrics for image <-> caption-set matching."""
+    i2g_rank, g2i_rank = retrieval_rank_arrays(image_embeddings, text_embeddings)
+    return retrieval_metrics_from_ranks(i2g_rank, g2i_rank, ks=ks)
+
+
+def retrieval_rank_arrays(
+    image_embeddings: np.ndarray,
+    text_embeddings: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute per-sample ranks for image <-> caption-set retrieval."""
     image_embeddings = l2_normalize(image_embeddings.astype("float32"))
     group_embeddings = aggregate_caption_groups(text_embeddings.astype("float32"))
 
@@ -693,6 +702,16 @@ def retrieval_metrics(
 
     g2i_order = np.argsort(-group_similarity.T, axis=1)
     g2i_rank = np.argmax(g2i_order == target_index[:, None], axis=1) + 1
+
+    return i2g_rank, g2i_rank
+
+
+def retrieval_metrics_from_ranks(
+    i2g_rank: np.ndarray,
+    g2i_rank: np.ndarray,
+    ks: tuple[int, ...] = RETRIEVAL_KS,
+) -> dict[str, float]:
+    """Compute summary metrics from precomputed retrieval ranks."""
 
     metrics: dict[str, float] = {}
     for k in ks:
@@ -712,6 +731,80 @@ def print_retrieval_row(method_name: str, metrics: dict[str, float]) -> None:
     row.append(f"{metrics['i2g_median_rank']:.1f}")
     row.append(f"{metrics['g2i_median_rank']:.1f}")
     print(" | ".join(row))
+
+
+def evaluate_retrieval_result(
+    image_embeddings: np.ndarray,
+    text_embeddings: np.ndarray,
+) -> tuple[dict[str, float], dict[str, np.ndarray]]:
+    i2g_rank, g2i_rank = retrieval_rank_arrays(image_embeddings, text_embeddings)
+    metrics = retrieval_metrics_from_ranks(i2g_rank, g2i_rank)
+    rank_data = {
+        "i2g_rank": i2g_rank,
+        "g2i_rank": g2i_rank,
+    }
+    return metrics, rank_data
+
+
+def bootstrap_combined_rank_ci(
+    i2g_rank: np.ndarray,
+    g2i_rank: np.ndarray,
+    n_bootstrap: int = RANK_BOOTSTRAP_SAMPLES,
+    seed: int = SEED,
+) -> tuple[float, float, float]:
+    rng = np.random.default_rng(seed)
+    num_samples = len(i2g_rank)
+    bootstrap_scores = np.empty(n_bootstrap, dtype="float64")
+
+    for bootstrap_index in range(n_bootstrap):
+        sample_index = rng.integers(0, num_samples, size=num_samples)
+        bootstrap_scores[bootstrap_index] = 0.5 * (
+            np.mean(i2g_rank[sample_index]) + np.mean(g2i_rank[sample_index])
+        )
+
+    point_estimate = 0.5 * (float(np.mean(i2g_rank)) + float(np.mean(g2i_rank)))
+    lower = float(np.percentile(bootstrap_scores, 2.5))
+    upper = float(np.percentile(bootstrap_scores, 97.5))
+    return point_estimate, lower, upper
+
+
+def plot_rank_benchmark(
+    method_names: list[str],
+    rank_results: dict[str, dict[str, np.ndarray]],
+) -> None:
+    summary_rows = []
+    for method_name in method_names:
+        rank_data = rank_results[method_name]
+        point_estimate, lower, upper = bootstrap_combined_rank_ci(
+            rank_data["i2g_rank"],
+            rank_data["g2i_rank"],
+        )
+        summary_rows.append((method_name, point_estimate, lower, upper))
+
+    summary_rows.sort(key=lambda row: row[1])
+    sorted_methods = [row[0] for row in summary_rows]
+    sorted_points = np.array([row[1] for row in summary_rows], dtype="float64")
+    lower_errors = sorted_points - np.array([row[2] for row in summary_rows], dtype="float64")
+    upper_errors = np.array([row[3] for row in summary_rows], dtype="float64") - sorted_points
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    y_positions = np.arange(len(sorted_methods))
+    ax.barh(
+        y_positions,
+        sorted_points,
+        xerr=np.vstack([lower_errors, upper_errors]),
+        color="#8fbcd4",
+        edgecolor="black",
+        capsize=4,
+    )
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(sorted_methods)
+    ax.invert_yaxis()
+    ax.set_xlabel("Bootstrapped Mean Retrieval Rank (lower is better)")
+    ax.set_title("COCO Retrieval Benchmark by Method")
+    ax.grid(axis="x", linestyle="--", alpha=0.3)
+    fig.tight_layout()
+    plt.show()
 
 
 print("\nRunning retrieval benchmark on held-out COCO image/caption groups...")
@@ -754,6 +847,7 @@ else:
     print(f"Training DLVPM only for {BENCHMARK_EPOCHS} epochs.")
 
 benchmark_results: dict[str, dict[str, float]] = {}
+benchmark_rank_results: dict[str, dict[str, np.ndarray]] = {}
 method_order = ["DLVPM"]
 steps_per_epoch = max(1, benchmark_train_n // BATCH_SIZE)
 warmup_steps = max(1, steps_per_epoch * LEARNING_RATE_WARMUP_EPOCHS)
@@ -775,7 +869,9 @@ dlvpm_benchmark = StructuralModel(
     diag_offset=1e-6,
     train_DLV=True,
     momentum=0.95,
-    order=True
+    order=True,
+    order_type="callback",
+    order_association_cutoff=0.99
 )
 dlvpm_optimizers = [
     keras.optimizers.Adam(learning_rate=lr_schedule, clipnorm=1.0)
@@ -793,26 +889,12 @@ dlvpm_img, dlvpm_txt = collect_image_text_embeddings(
     benchmark_test_ds,
     max_samples=benchmark_test_n,
 )
-benchmark_results["DLVPM"] = retrieval_metrics(dlvpm_img, dlvpm_txt)
-
-test_DLVs = dlvpm_benchmark.predict(benchmark_test_ds)
-corr_mat = dlvpm_benchmark.calculate_corrmat(test_DLVs)
-
-corrmean = [keras.ops.sum(keras.ops.multiply(a,Path)) for a in corr_mat]
-print(corrmean)
-
-
-fig, ax = plot_correlation_chord_row(
-    corr_mat,
-    ["Image", "Caption 1", "Caption 2", "Caption 3", "Caption 4", "Caption 5"],
-    first_n_dims=5,
-    min_corr=0,
-    node_cmap_name="Pastel1",
-    figure_title="Correlation Plots Between COCO Images and Captions",
-    show_edge_labels=True,
-    dpi=300,
-    show=True,
+benchmark_results["DLVPM"], benchmark_rank_results["DLVPM"] = evaluate_retrieval_result(
+    dlvpm_img,
+    dlvpm_txt,
 )
+
+# Intermediate correlation plotting is disabled so the benchmark can run through cleanly.
 
 if RUN_BASELINES:
     # CLIP baseline
@@ -840,7 +922,10 @@ if RUN_BASELINES:
         benchmark_test_ds,
         max_samples=benchmark_test_n,
     )
-    benchmark_results["CLIP"] = retrieval_metrics(clip_img, clip_txt)
+    benchmark_results["CLIP"], benchmark_rank_results["CLIP"] = evaluate_retrieval_result(
+        clip_img,
+        clip_txt,
+    )
     method_order.append("CLIP")
 
     # VICReg baseline
@@ -869,8 +954,42 @@ if RUN_BASELINES:
         benchmark_test_ds,
         max_samples=benchmark_test_n,
     )
-    benchmark_results["VICReg"] = retrieval_metrics(vic_img, vic_txt)
+    benchmark_results["VICReg"], benchmark_rank_results["VICReg"] = evaluate_retrieval_result(
+        vic_img,
+        vic_txt,
+    )
     method_order.append("VICReg")
+
+    print("Training LeJEPA baseline...")
+    lejepa_model_list = build_model_list(NDIMS)
+    lejepa_model = LeJEPA(
+        Path=Path,
+        model_list=lejepa_model_list,
+        regularizer_list=[None for _ in lejepa_model_list],
+        ndims=NDIMS,
+        is_siamese=False,
+    )
+    lejepa_optimizers = [
+        keras.optimizers.Adam(learning_rate=lr_schedule, clipnorm=1.0)
+        for _ in lejepa_model_list
+    ]
+    lejepa_model.compile(lejepa_optimizers)
+    lejepa_model.fit(
+        benchmark_train_ds,
+        validation_data=benchmark_val_ds,
+        epochs=BENCHMARK_EPOCHS,
+        verbose=True,
+    )
+    lejepa_img, lejepa_txt = collect_image_text_embeddings(
+        lejepa_model,
+        benchmark_test_ds,
+        max_samples=benchmark_test_n,
+    )
+    benchmark_results["LeJEPA"], benchmark_rank_results["LeJEPA"] = evaluate_retrieval_result(
+        lejepa_img,
+        lejepa_txt,
+    )
+    method_order.append("LeJEPA")
 
 print(
     "\nGroup-level retrieval benchmark (higher Top-K accuracy is better, lower median rank is better):"
@@ -883,3 +1002,5 @@ print(" | ".join(header))
 print("-" * 100)
 for method in method_order:
     print_retrieval_row(method, benchmark_results[method])
+
+plot_rank_benchmark(method_order, benchmark_rank_results)

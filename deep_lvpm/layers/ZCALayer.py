@@ -88,7 +88,6 @@ class ZCALayer(keras.layers.Layer):
                  tot_num=None, 
                  ndims=None, 
                  sparse_l1=0.0,
-                 orthog_weight=0.0,
                  **kwargs):
         
         super().__init__(**kwargs)
@@ -100,7 +99,6 @@ class ZCALayer(keras.layers.Layer):
         self.tot_num = tot_num 
         self.ndims = ndims 
         self.sparse_l1 = float(sparse_l1)
-        self.orthog_weight = float(orthog_weight)
 
 
     def build(self, input_shape):
@@ -138,31 +136,14 @@ class ZCALayer(keras.layers.Layer):
         X = self.batch_norm1(inputs, training=training)
 
         if training:
-            self.update_moving_variables(X)       
+            self.update_moving_variables(X)
             out = ops.matmul(X, self.project)
+            # out = ops.matmul(out, self.inv_sqrt_via_cholesky(self.moving_conv2))       
         else:  
             out = ops.matmul(X, self.project)
             # out = ops.matmul(out, self.inv_sqrt_via_cholesky(self.moving_conv2))
 
-        if self.orthog_weight > 0.0:
-            self.add_loss(self._orthogonality_penalty(out))
-
         return out
-
-
-    def _orthogonality_penalty(self, y):
-        dtype = ops.dtype(y)
-        y_centered = y - ops.mean(y, axis=0, keepdims=True)
-        row_count = ops.cast(ops.shape(y_centered)[0], dtype)
-        row_count_safe = ops.maximum(row_count, ops.cast(1.0, dtype))
-        gram = ops.matmul(ops.transpose(y_centered), y_centered) / row_count_safe
-        gram = 0.5 * (gram + ops.transpose(gram))
-        offdiag_mask = ops.ones_like(gram) - ops.eye(self.ndims, dtype=dtype)
-        offdiag = gram * offdiag_mask
-        fro_norm = ops.sqrt(
-            ops.sum(ops.square(offdiag)) + ops.cast(self.epsilon, dtype)
-        )
-        return ops.cast(self.orthog_weight, dtype) * fro_norm
 
 
     def inv_sqrt_via_cholesky(self, M):
@@ -208,7 +189,8 @@ class ZCALayer(keras.layers.Layer):
                 scale_fact*ops.matmul(ops.transpose(y), y) + self.diag_offset*ops.eye(self.moving_conv2.shape[0], self.moving_conv2.shape[0], dtype=self.compute_dtype)   
             )
 
-        
+
+        # self.project.assign(ops.matmul(self.project, sqrt_inv_y))    
         out_y = ops.matmul(ops.squeeze(y), sqrt_inv_y)
 
         return out_y
@@ -241,7 +223,6 @@ class ZCALayer(keras.layers.Layer):
             'tot_num': self.tot_num,
             'ndims': self.ndims,
             'sparse_l1': self.sparse_l1,
-            'orthog_weight': self.orthog_weight,
         })
         return config
 
