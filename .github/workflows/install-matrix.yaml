@@ -5,6 +5,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  PYTHON_VERSION: "3.11"
+
 defaults:
   run:
     shell: bash
@@ -18,45 +21,37 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            python-version: "3.10"
             extra: tf-cpu
             label: linux-tensorflow-cpu
           - os: ubuntu-latest
-            python-version: "3.10"
             extra: tf-gpu
             label: linux-tensorflow-gpu
           - os: ubuntu-latest
-            python-version: "3.10"
             extra: torch-cpu
             label: linux-pytorch-cpu
           - os: ubuntu-latest
-            python-version: "3.10"
             extra: torch-gpu
             label: linux-pytorch-gpu
           - os: macos-14
-            python-version: "3.10"
             extra: tf-apple
             label: macos-apple-tensorflow
           - os: macos-14
-            python-version: "3.10"
             extra: torch-apple
             label: macos-apple-pytorch
           - os: windows-latest
-            python-version: "3.10"
             extra: tf-cpu
             label: windows-intel-tensorflow
           - os: windows-latest
-            python-version: "3.10"
             extra: torch-cpu
             label: windows-intel-pytorch
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Upgrade pip
         run: python -m pip install --upgrade pip
@@ -65,27 +60,17 @@ jobs:
         if: ${{ matrix.extra == 'torch-gpu' }}
         run: |
           python -m pip install --upgrade --no-cache-dir \
-            --index-url https://download.pytorch.org/whl/cu124 \
+            --index-url https://download.pytorch.org/whl/cu126 \
             torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0
 
       - name: Install Deep LVPM (${{ matrix.extra }})
-        run: |
-          python -m pip install --upgrade --no-cache-dir ".[${{ matrix.extra }}]"
+        run: python -m pip install --upgrade --no-cache-dir ".[${{ matrix.extra }}]"
 
       - name: Verify imports
         run: |
-          python - <<'PY'
-import importlib
-
-extra = "${{ matrix.extra }}"
-modules = ["deep_lvpm"]
-
-if extra.startswith("tf"):
-    modules.append("tensorflow")
-elif extra.startswith("torch"):
-    modules.append("torch")
-
-for name in modules:
-    module = importlib.import_module(name)
-    print(f"Loaded {name}=={getattr(module, '__version__', 'unknown')}")
-PY
+          python -c "import deep_lvpm; print('Loaded deep_lvpm')"
+          if [[ '${{ matrix.extra }}' == tf-* ]]; then
+            python -c "import tensorflow as tf; print(f'Loaded tensorflow=={tf.__version__}')"
+          elif [[ '${{ matrix.extra }}' == torch-* ]]; then
+            python -c "import torch; print(f'Loaded torch=={torch.__version__}')"
+          fi

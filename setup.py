@@ -6,16 +6,16 @@ setuptools.setup(
     author="Alex James Ing",
     description="Deep Latent Variable Path Modelling (Keras 3, multi-backend)",
     packages=setuptools.find_packages(),
-    python_requires=">=3.10,<3.12",
+    python_requires=">=3.11,<3.13",
     install_requires=[
-        "keras==3.10.0",
+        "keras==3.14.0",
         "keras_tuner>=1.4.7",
         "pydot==4.0.1",
         "scikit-learn==1.6.1",
         "matplotlib==3.9.4",
         "pytest>=8.0.0",
         "fiftyone>=1.0.0",
-        # Compatible with TensorFlow 2.16.x and Python 3.10–3.11
+        # Compatible with TensorFlow 2.16.x and Python 3.11–3.12
         "tensorflow-datasets==4.9.4",
     ],
     extras_require={
