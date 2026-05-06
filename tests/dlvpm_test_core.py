@@ -5,12 +5,34 @@ import pytest
 import keras
 from keras import layers
 
+from deep_lvpm.layers.ConfoundLayer import ConfoundLayer
 from deep_lvpm.layers.FactorLayer import FactorLayer
 from deep_lvpm.model import StructuralModel
 from deep_lvpm.tutorial.tcga_quickstart import (
     _evaluate_structural_model,
     run_tcga_quickstart,
 )
+
+
+def test_confound_layer_training_updates_state():
+    """ConfoundLayer should preserve feature width and update its moving statistics."""
+    rng = np.random.default_rng(123)
+    x_input = keras.Input(shape=(4,))
+    confound_input = keras.Input(shape=(2,))
+    confound_layer = ConfoundLayer(tot_num=20, momentum=0.5)
+    outputs = confound_layer([x_input, confound_input], training=True)
+    model = keras.Model([x_input, confound_input], outputs)
+
+    x_batch = rng.normal(size=(5, 4)).astype("float32")
+    confound_batch = rng.normal(size=(5, 2)).astype("float32")
+    result = model([x_batch, confound_batch], training=True)
+
+    assert result.shape == (5, 4)
+    assert float(confound_layer.run.numpy()) == pytest.approx(1.0, rel=1e-6)
+    assert confound_layer.moving_conv2.shape == (3, 3)
+    assert confound_layer.moving_convX.shape == (3, 4)
+    assert np.any(np.abs(confound_layer.moving_conv2.numpy()) > 0)
+    assert np.any(np.abs(confound_layer.moving_convX.numpy()) > 0)
 
 
 def test_factor_layer_training_updates_state():
