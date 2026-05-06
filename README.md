@@ -79,7 +79,7 @@ pip install "git+https://github.com/alexjamesing/Deep_LVPM.git@keras3#egg=deep-l
 **NVIDIA GPU (CUDA):**
 ```bash
 # 1) Install CUDA-enabled PyTorch from https://pytorch.org (per your CUDA/driver), e.g.:
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 # 2) Then install deep-lvpm without pulling CPU wheels:
 pip install "git+https://github.com/alexjamesing/Deep_LVPM.git@keras3#egg=deep-lvpm[torch-gpu]"
 ```

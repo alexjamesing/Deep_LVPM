@@ -60,7 +60,7 @@ jobs:
         if: ${{ matrix.extra == 'torch-gpu' }}
         run: |
           python -m pip install --upgrade --no-cache-dir \
-            --index-url https://download.pytorch.org/whl/cu124 \
+            --index-url https://download.pytorch.org/whl/cu126 \
             torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0
 
       - name: Install Deep LVPM (${{ matrix.extra }})
