@@ -35,7 +35,7 @@ The gif above shows a plot of model training in progress on a three factor DLVPM
 
 
 ### Python
-- Python `>= 3.11` 
+- Python `3.11` or `3.12`
 ---
 
 ## Conda (recommended)

@@ -6,9 +6,9 @@ setuptools.setup(
     author="Alex James Ing",
     description="Deep Latent Variable Path Modelling (Keras 3, multi-backend)",
     packages=setuptools.find_packages(),
-    python_requires=">=3.10,<3.12",
+    python_requires=">=3.11,<3.13",
     install_requires=[
-        "keras==3.10.0",
+        "keras==3.14.0",
         "pydot==4.0.1",
         "scikit-learn==1.6.1",
         "matplotlib==3.9.4",
@@ -50,4 +50,3 @@ setuptools.setup(
     },
     package_data={"deep_lvpm.data": ["*.npz"]},
 )
-
