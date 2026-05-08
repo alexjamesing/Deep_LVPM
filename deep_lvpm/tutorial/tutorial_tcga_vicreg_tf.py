@@ -62,18 +62,6 @@ def main():
     n_views = len(X_train)
     ndims = 64  # Embedding size
 
-    # Path adjacency (match DLVPM TCGA tutorial) -----------------------
-    Path = np.array(
-        [
-            [0, 1, 0, 0, 0],
-            [1, 0, 1, 1, 1],
-            [0, 1, 0, 0, 0],
-            [0, 1, 0, 0, 0],
-            [0, 1, 0, 0, 0],
-        ],
-        dtype="float32",
-    )
-
     # Measurement models -----------------------------------------------
     encoders = [
         build_encoder(X_train[v].shape[1], name)
@@ -85,7 +73,6 @@ def main():
 
     # Build VICReg model -----------------------------------------------
     model = VICReg(
-        Path=Path,
         model_list=encoders,
         regularizer_list=proj_regs,
         ndims=ndims,
@@ -117,4 +104,3 @@ def main():
 if __name__ == "__main__":
     tf.config.run_functions_eagerly(False)
     main()
-

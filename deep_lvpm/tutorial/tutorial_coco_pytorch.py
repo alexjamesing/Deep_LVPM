@@ -932,7 +932,6 @@ if RUN_BASELINES:
     print("Training VICReg baseline...")
     vic_model_list = build_model_list(NDIMS)
     vic_model = VICReg(
-        Path=Path,
         model_list=vic_model_list,
         regularizer_list=[None for _ in vic_model_list],
         ndims=NDIMS,
@@ -963,7 +962,6 @@ if RUN_BASELINES:
     print("Training LeJEPA baseline...")
     lejepa_model_list = build_model_list(NDIMS)
     lejepa_model = LeJEPA(
-        Path=Path,
         model_list=lejepa_model_list,
         regularizer_list=[None for _ in lejepa_model_list],
         ndims=NDIMS,

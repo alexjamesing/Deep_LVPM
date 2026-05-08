@@ -781,20 +781,19 @@ class DGCCA(keras.Model):
 @keras.utils.register_keras_serializable(package="deep_lvpm", name="VICReg")
 class VICReg(keras.Model):
     """
-    Multi-view VICReg model with path-masked view alignment.
+    Multi-view VICReg model with full cross-view alignment.
 
     - Appends a Dense(ndims) projection head to each per-view encoder.
-    - Uses VICReg loss: invariance (MSE between connected views), variance floor
+    - Uses VICReg loss: invariance (MSE between all other views), variance floor
       per view, and covariance decorrelation per view.
     - Optimizes per-view by looping over views and updating one submodel at a time,
-      only against its connected neighbors defined by `Path` (like StructuralModel).
+      comparing each view against every other view in the batch.
 
     Metrics reported mirror StructuralModel: total_loss, cross_metric (mean corr), and mse_loss (invariance term).
     """
 
     def __init__(
         self,
-        Path,
         model_list,
         regularizer_list,
         ndims,
@@ -808,7 +807,6 @@ class VICReg(keras.Model):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self.Path = ops.convert_to_tensor(Path, dtype="float32")
         self.ndims = ndims
         self.var_weight = float(var_weight)
         self.inv_weight = float(inv_weight)
@@ -918,6 +916,27 @@ class VICReg(keras.Model):
         diff = a - b
         return ops.mean(ops.square(diff))
 
+    def _cross_view_stats(self, z_v, inputs_nested, view_index, training, stop_grad):
+        dtype = ops.dtype(z_v)
+        zero = ops.convert_to_tensor(0.0, dtype=dtype)
+        num_other_views = len(self.model_list) - 1
+        if num_other_views <= 0:
+            return zero, zero
+
+        inv_total = zero
+        corr_total = zero
+        for other_index in range(len(self.model_list)):
+            if other_index == view_index:
+                continue
+            z_other = self.model_list[other_index](inputs_nested[other_index], training=training)
+            if stop_grad:
+                z_other = self._stop_grad(z_other)
+            inv_total = inv_total + self._pair_mse(z_v, z_other)
+            corr_total = corr_total + self._corr_pair(z_v, z_other)
+
+        denom = ops.convert_to_tensor(float(num_other_views), dtype=dtype)
+        return inv_total / denom, corr_total / denom
+
     def _corr_pair(self, a, b):
         # Mean Pearson correlation across embedding dimensions (matches StructuralModel)
         eps = ops.convert_to_tensor(self.eps, dtype=ops.dtype(a))
@@ -992,21 +1011,13 @@ class VICReg(keras.Model):
                 mdl = self.model_list[vie]
                 with tf.GradientTape() as tape:
                     z_v = mdl(inputs_nested[vie], training=True)  # (B, d)
-
-                    # Mask over connected neighbors
-                    mask = ops.cast(self.Path[vie, :], ops.dtype(z_v))  # (M,)
-                    inv_loss = ops.convert_to_tensor(0.0, dtype=ops.dtype(z_v))
-                    cc_num = ops.convert_to_tensor(0.0, dtype=ops.dtype(z_v))
-                    for n in range(len(self.model_list)):
-                        z_n = self._stop_grad(self.model_list[n](inputs_nested[n], training=True))
-                        w = mask[n]
-                        mse_n = self._pair_mse(z_v, z_n)
-                        inv_loss = inv_loss + w * mse_n
-                        cc_num = cc_num + w * self._corr_pair(z_v, z_n)
-
-                    n_conn = ops.sum(mask)
-                    n_conn = ops.maximum(n_conn, ops.convert_to_tensor(1.0, dtype=ops.dtype(z_v)))
-                    cc_mean = cc_num / n_conn
+                    inv_loss, cc_mean = self._cross_view_stats(
+                        z_v,
+                        inputs_nested,
+                        view_index=vie,
+                        training=True,
+                        stop_grad=True,
+                    )
 
                     var_loss = self._variance_loss(z_v)
                     cov_loss = self._covariance_loss(z_v)
@@ -1030,19 +1041,13 @@ class VICReg(keras.Model):
             for vie in range(len(self.model_list)):
                 mdl = self.model_list[vie]
                 z_v = mdl(inputs_nested[vie], training=True)
-
-                mask = ops.cast(self.Path[vie, :], ops.dtype(z_v))
-                inv_loss = ops.convert_to_tensor(0.0, dtype=ops.dtype(z_v))
-                cc_num = ops.convert_to_tensor(0.0, dtype=ops.dtype(z_v))
-                for n in range(len(self.model_list)):
-                    z_n = self._stop_grad(self.model_list[n](inputs_nested[n], training=True))
-                    w = mask[n]
-                    inv_loss = inv_loss + w * self._pair_mse(z_v, z_n)
-                    cc_num = cc_num + w * self._corr_pair(z_v, z_n)
-
-                n_conn = ops.sum(mask)
-                n_conn = ops.maximum(n_conn, ops.convert_to_tensor(1.0, dtype=ops.dtype(z_v)))
-                cc_mean = cc_num / n_conn
+                inv_loss, cc_mean = self._cross_view_stats(
+                    z_v,
+                    inputs_nested,
+                    view_index=vie,
+                    training=True,
+                    stop_grad=True,
+                )
 
                 var_loss = self._variance_loss(z_v)
                 cov_loss = self._covariance_loss(z_v)
@@ -1095,19 +1100,13 @@ class VICReg(keras.Model):
         for vie in range(len(self.model_list)):
             mdl = self.model_list[vie]
             z_v = mdl(inputs_nested[vie], training=False)
-
-            mask = ops.cast(self.Path[vie, :], ops.dtype(z_v))
-            inv_loss = ops.convert_to_tensor(0.0, dtype=ops.dtype(z_v))
-            cc_num = ops.convert_to_tensor(0.0, dtype=ops.dtype(z_v))
-            for n in range(len(self.model_list)):
-                z_n = self.model_list[n](inputs_nested[n], training=False)
-                w = mask[n]
-                inv_loss = inv_loss + w * self._pair_mse(z_v, z_n)
-                cc_num = cc_num + w * self._corr_pair(z_v, z_n)
-
-            n_conn = ops.sum(mask)
-            n_conn = ops.maximum(n_conn, ops.convert_to_tensor(1.0, dtype=ops.dtype(z_v)))
-            cc_mean = cc_num / n_conn
+            inv_loss, cc_mean = self._cross_view_stats(
+                z_v,
+                inputs_nested,
+                view_index=vie,
+                training=False,
+                stop_grad=False,
+            )
 
             var_loss = self._variance_loss(z_v)
             cov_loss = self._covariance_loss(z_v)
@@ -1137,7 +1136,6 @@ class VICReg(keras.Model):
         serialized_regularizers = [keras.utils.serialize_keras_object(r) for r in self.regularizer_list]
         return {
             **base_config,
-            "Path": np.asarray(self.Path).tolist(),
             "model_list": serialized_model_list,
             "regularizer_list": serialized_regularizers,
             "ndims": self.ndims,
@@ -1151,6 +1149,7 @@ class VICReg(keras.Model):
 
     @classmethod
     def from_config(cls, config):
+        config.pop("Path", None)
         config["model_list"] = [keras.utils.deserialize_keras_object(mc) for mc in config["model_list"]]
         if "regularizer_list" in config:
             config["regularizer_list"] = [keras.utils.deserialize_keras_object(rc) for rc in config["regularizer_list"]]
@@ -1171,21 +1170,15 @@ class LeJEPA(keras.Model):
     """
     Multi-view LeJEPA model for linking heterogeneous data views.
 
-    Original LeJEPA (paper) uses:
+    This implementation:
         total_loss = (1 - lambda) * prediction_loss + lambda * SIGReg
-    where the prediction loss pulls each view toward the mean embedding of the
-    designated global views, and SIGReg encourages each view's embeddings to
-    follow an isotropic Gaussian distribution.
-
-    This class keeps that loss exactly when `global_view_indices` is provided.
-    To fit the existing `Path`-based deep_lvpm API for multimodal linking, it
-    also supports a `Path`-masked center loss: each view is pulled toward the
-    mean of the views connected to it in `Path`.
+    where the prediction loss pulls each view toward the mean embedding of all
+    other data views, and SIGReg encourages each view's embeddings to follow an
+    isotropic Gaussian distribution.
     """
 
     def __init__(
         self,
-        Path,
         model_list,
         regularizer_list,
         ndims,
@@ -1194,8 +1187,6 @@ class LeJEPA(keras.Model):
         integration_min: float = -5.0,
         integration_max: float = 5.0,
         integration_points: int = 17,
-        global_view_indices=None,
-        use_path_centers: bool = True,
         run_from_config: bool = False,
         is_siamese: bool = False,
         eps: float = 1e-6,
@@ -1203,21 +1194,15 @@ class LeJEPA(keras.Model):
     ):
         super().__init__(**kwargs)
 
-        self.Path = None if Path is None else ops.convert_to_tensor(Path, dtype="float32")
         self.ndims = int(ndims)
         self.lambda_weight = float(lambda_weight)
         self.num_slices = int(num_slices)
         self.integration_min = float(integration_min)
         self.integration_max = float(integration_max)
         self.integration_points = int(integration_points)
-        self.global_view_indices = None if global_view_indices is None else [int(v) for v in global_view_indices]
-        self.use_path_centers = bool(use_path_centers)
         self.is_siamese = bool(is_siamese)
         self.eps = float(eps)
         self.regularizer_list = regularizer_list
-
-        if self.global_view_indices is None and self.Path is None:
-            raise ValueError("Provide either `Path` or `global_view_indices`.")
 
         if not run_from_config:
             if self.is_siamese:
@@ -1403,61 +1388,30 @@ class LeJEPA(keras.Model):
             total = total + self._sigreg_view(Z[:, :, v], A, t)
         return total / float(len(self.model_list))
 
-    def _path_center_for_view(self, Z, view_index):
-        dtype = ops.dtype(Z)
-        mask = ops.cast(self.Path[view_index, :], dtype)  # (M,)
-        denom = ops.sum(mask)
-        denom_safe = ops.maximum(denom, self._ones_scalar(dtype))
+    def _mean_other_views(self, Z, view_index):
+        num_other_views = len(self.model_list) - 1
+        if num_other_views <= 0:
+            return Z[:, :, view_index]
 
-        # center must become a (B, d) tensor; initialize from first add.
         center = None
-        for j in range(len(self.model_list)):
-            contrib = ops.expand_dims(mask[j], axis=0) * Z[:, :, j]
-            center = contrib if center is None else center + contrib
-        center = center / denom_safe
-        active = ops.cast(denom > self._zeros_scalar(dtype), dtype)
-        return center, active
-
-    def _global_center(self, Z):
-        if self.global_view_indices is None or len(self.global_view_indices) == 0:
-            raise ValueError("`global_view_indices` must be a non-empty list when using global-view LeJEPA mode.")
-        center = None
-        for idx in self.global_view_indices:
-            z_idx = Z[:, :, idx]
-            center = z_idx if center is None else center + z_idx
-        return center / float(len(self.global_view_indices))
-
-    def _use_path_mode(self):
-        if self.Path is None:
-            return False
-        if self.global_view_indices is None:
-            return True
-        return bool(self.use_path_centers)
+        for other_index in range(len(self.model_list)):
+            if other_index == view_index:
+                continue
+            z_other = Z[:, :, other_index]
+            center = z_other if center is None else center + z_other
+        return center / float(num_other_views)
 
     def _prediction_loss_ops(self, Z):
         dtype = ops.dtype(Z)
         M = len(self.model_list)
+        if M <= 1:
+            return self._zeros_scalar(dtype)
 
-        # Multimodal graph generalization: each view predicts the mean of its neighbors.
-        if self._use_path_mode():
-            total = self._zeros_scalar(dtype)
-            count = self._zeros_scalar(dtype)
-            for v in range(M):
-                center_v, active = self._path_center_for_view(Z, v)
-                loss_v = ops.mean(ops.square(center_v - Z[:, :, v]))
-                total = total + active * loss_v
-                count = count + active
-            return total / ops.maximum(count, self._ones_scalar(dtype))
-
-        # Paper-exact mode: one shared center from the designated global views.
-        if self.global_view_indices is not None:
-            center = self._global_center(Z)
-            total = self._zeros_scalar(dtype)
-            for v in range(M):
-                total = total + ops.mean(ops.square(center - Z[:, :, v]))
-            return total / float(M)
-
-        raise ValueError("LeJEPA requires either path mode or global-view mode.")
+        total = self._zeros_scalar(dtype)
+        for v in range(M):
+            center_v = self._mean_other_views(Z, v)
+            total = total + ops.mean(ops.square(center_v - Z[:, :, v]))
+        return total / float(M)
 
     def _corr_pair(self, a, b):
         eps = ops.convert_to_tensor(self.eps, dtype=ops.dtype(a))
@@ -1497,25 +1451,18 @@ class LeJEPA(keras.Model):
     def _cross_metric_ops(self, Z):
         dtype = ops.dtype(Z)
         M = len(self.model_list)
+        if M <= 1:
+            return self._zeros_scalar(dtype)
 
-        if self._use_path_mode():
-            total = self._zeros_scalar(dtype)
-            count = self._zeros_scalar(dtype)
-            for i in range(M):
-                for j in range(M):
-                    w = ops.cast(self.Path[i, j], dtype)
-                    total = total + w * self._corr_pair(Z[:, :, i], Z[:, :, j])
-                    count = count + w
-            return total / ops.maximum(count, self._ones_scalar(dtype))
-
-        if self.global_view_indices is not None:
-            center = self._global_center(Z)
-            total = self._zeros_scalar(dtype)
-            for v in range(M):
-                total = total + self._corr_pair(center, Z[:, :, v])
-            return total / float(M)
-
-        raise ValueError("LeJEPA requires either path mode or global-view mode.")
+        total = self._zeros_scalar(dtype)
+        count = self._zeros_scalar(dtype)
+        for i in range(M):
+            for j in range(M):
+                if i == j:
+                    continue
+                total = total + self._corr_pair(Z[:, :, i], Z[:, :, j])
+                count = count + self._ones_scalar(dtype)
+        return total / ops.maximum(count, self._ones_scalar(dtype))
 
     def _redundancy_ops(self, Z):
         total = self._zeros_scalar(ops.dtype(Z))
@@ -1678,14 +1625,8 @@ class LeJEPA(keras.Model):
         serialized_model_list = [keras.utils.serialize_keras_object(model) for model in self.model_list]
         serialized_regularizers = [keras.utils.serialize_keras_object(r) for r in self.regularizer_list]
 
-        if self.Path is None:
-            path_config = None
-        else:
-            path_config = np.asarray(keras.ops.convert_to_numpy(self.Path)).tolist()
-
         return {
             **base_config,
-            "Path": path_config,
             "model_list": serialized_model_list,
             "regularizer_list": serialized_regularizers,
             "ndims": self.ndims,
@@ -1694,14 +1635,15 @@ class LeJEPA(keras.Model):
             "integration_min": self.integration_min,
             "integration_max": self.integration_max,
             "integration_points": self.integration_points,
-            "global_view_indices": self.global_view_indices,
-            "use_path_centers": self.use_path_centers,
             "is_siamese": self.is_siamese,
             "eps": self.eps,
         }
 
     @classmethod
     def from_config(cls, config):
+        config.pop("Path", None)
+        config.pop("global_view_indices", None)
+        config.pop("use_path_centers", None)
         config["model_list"] = [keras.utils.deserialize_keras_object(mc) for mc in config["model_list"]]
         if "regularizer_list" in config:
             config["regularizer_list"] = [keras.utils.deserialize_keras_object(rc) for rc in config["regularizer_list"]]

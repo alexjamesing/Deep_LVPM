@@ -8,6 +8,7 @@ from keras import layers
 from deep_lvpm.layers.ConfoundLayer import ConfoundLayer
 from deep_lvpm.layers.FactorLayer import FactorLayer
 from deep_lvpm.model import StructuralModel
+from deep_lvpm.multi_model import LeJEPA, VICReg
 from deep_lvpm.tutorial.tcga_quickstart import (
     _evaluate_structural_model,
     run_tcga_quickstart,
@@ -49,6 +50,77 @@ def test_factor_layer_training_updates_state():
     assert result.shape == (5, 3)
     assert float(factor_layer.run.numpy()) == pytest.approx(1.0, rel=1e-6)
     np.testing.assert_array_less(np.zeros_like(result), np.abs(result))
+
+
+def _make_encoder(input_width, hidden_width=8):
+    """Create a small encoder for multimodal baseline tests."""
+    return keras.Sequential(
+        [
+            keras.Input(shape=(input_width,)),
+            layers.Dense(hidden_width, activation="relu"),
+        ]
+    )
+
+
+def _to_metric_floats(metrics):
+    """Convert backend tensors returned by Keras metrics into Python floats."""
+    return {
+        name: float(keras.ops.convert_to_numpy(value))
+        for name, value in metrics.items()
+    }
+
+
+def test_vicreg_trains_across_all_views_without_path_matrix():
+    """VICReg should train using all view pairs without requiring a path matrix."""
+    keras.utils.set_random_seed(123)
+    rng = np.random.default_rng(123)
+    model = VICReg(
+        model_list=[_make_encoder(4), _make_encoder(4), _make_encoder(4)],
+        regularizer_list=[None, None, None],
+        ndims=3,
+    )
+    model.compile(
+        [keras.optimizers.Adam(learning_rate=1e-3) for _ in model.model_list]
+    )
+
+    batch = tuple(rng.normal(size=(6, 4)).astype("float32") for _ in range(3))
+    metrics = _to_metric_floats(model.train_step((batch,)))
+
+    assert set(metrics) == {"total_loss", "cross_metric", "mse_loss", "redundancy"}
+    assert all(np.isfinite(value) for value in metrics.values())
+    assert "Path" not in model.get_config()
+
+
+def test_lejepa_trains_across_all_views_without_path_matrix():
+    """LeJEPA should use the mean of the other views and not depend on path inputs."""
+    keras.utils.set_random_seed(456)
+    rng = np.random.default_rng(456)
+    model = LeJEPA(
+        model_list=[_make_encoder(4), _make_encoder(4), _make_encoder(4)],
+        regularizer_list=[None, None, None],
+        ndims=3,
+        num_slices=8,
+        integration_points=5,
+    )
+    model.compile(
+        [keras.optimizers.Adam(learning_rate=1e-3) for _ in model.model_list]
+    )
+
+    batch = tuple(rng.normal(size=(6, 4)).astype("float32") for _ in range(3))
+    metrics = _to_metric_floats(model.train_step((batch,)))
+    config = model.get_config()
+
+    assert set(metrics) == {
+        "total_loss",
+        "cross_metric",
+        "pred_loss",
+        "sigreg_loss",
+        "redundancy",
+    }
+    assert all(np.isfinite(value) for value in metrics.values())
+    assert "Path" not in config
+    assert "global_view_indices" not in config
+    assert "use_path_centers" not in config
 
 
 def test_structural_model_organize_inputs_supports_multi_input_models():

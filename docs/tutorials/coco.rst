@@ -167,11 +167,11 @@ The model list contains one image encoder and repeated references to the same te
                      for _ in model_list]
    dlvpm_model.compile(optimizer_list)
 
-6. Benchmark against CLIP and VICReg
-------------------------------------
+6. Benchmark against CLIP, VICReg, and LeJEPA
+---------------------------------------------
 
 The script trains DLVPM,
-CLIP, and VICReg with the same COCO pipeline and compares cross-modal retrieval quality.
+CLIP, VICReg, and LeJEPA with the same COCO pipeline and compares cross-modal retrieval quality.
 
 Benchmark task definition
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -216,7 +216,7 @@ Implementation in the tutorial
 The script performs the benchmark by:
 
 1. Building fixed benchmark train/validation/test subsets.
-2. Training DLVPM, CLIP, and VICReg for the same number of epochs.
+2. Training DLVPM, CLIP, VICReg, and LeJEPA for the same number of epochs.
 3. Collecting image embeddings plus all five caption embeddings from each trained model.
 4. L2-normalising embeddings.
 5. Aggregating each five-caption set into one normalized caption-group embedding.
@@ -253,6 +253,10 @@ The script performs the benchmark by:
    vic_model = VICReg(...)
    ...
    benchmark_results["VICReg"] = retrieval_metrics(vic_img, vic_txt)
+
+   lejepa_model = LeJEPA(...)
+   ...
+   benchmark_results["LeJEPA"] = retrieval_metrics(lejepa_img, lejepa_txt)
 
    # Compute and print retrieval metrics table
    header = ["Method", "i2g_top1", "g2i_top1", ...]

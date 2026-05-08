@@ -6,8 +6,8 @@
 This tutorial mirrors the Siamese CIFAR-10 examples but uses the
 VICReg multi-view model (deep_lvpm.multi_model.VICReg). We create two
 augmented views per image, feed them through a shared-weight encoder,
-and train with VICReg losses only between connected views in the path
-matrix. After training, we linearly probe the learned embeddings.
+and train with VICReg losses across both views. After training, we
+linearly probe the learned embeddings.
 """
 
 import os
@@ -213,11 +213,7 @@ CIFAR_image_backbone = build_hybrid_backbone()
 model_list = [CIFAR_image_backbone, CIFAR_image_backbone]
 proj_regs = [keras.regularizers.l2(WEIGHT_DECAY), keras.regularizers.l2(WEIGHT_DECAY)]
 
-# Path adjacency for siamese views (align v0 <-> v1)
-adjacency = tf.constant([[0, 1], [1, 0]], dtype="float32")
-
 vic_model = VICReg(
-    Path=adjacency,
     model_list=model_list,
     regularizer_list=proj_regs,
     ndims=NDIMS,
@@ -273,4 +269,3 @@ print("Classification report:")
 print(classification_report(y_test_cat, pred, digits=4))
 print("Confusion matrix:")
 print(confusion_matrix(y_test_cat, pred))
-
