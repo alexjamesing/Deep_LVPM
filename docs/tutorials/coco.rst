@@ -1,227 +1,370 @@
-MS COCO Image-Text Tutorial
-===========================
+MS COCO Tutorial (PyTorch Backend)
+==================================
 
-This tutorial demonstrates how to train a DLVPM model on MS COCO using one image view and multiple text views.
-The image encoder is an EfficientNetB0 convolutional network and the text encoder is a Transformer block.
-Each image is paired with its five official COCO captions, and retrieval metrics
-are averaged across the five captions for each image.
+This tutorial shows how to use DLVPM to link images and captions in the MS COCO
+dataset. The central idea is simple: each image is treated as one data view, and
+each of its five human-written captions is treated as an additional language
+view. DLVPM is then used to learn latent variables that are shared between the
+image and caption modalities.
+
+The full code lives in :mod:`deep_lvpm.tutorial.tutorial_coco_pytorch`, but the
+walkthrough below is written so that you can read and run it in sections.
 
 Prerequisites
 -------------
 
-Install :mod:`deep_lvpm` with TensorFlow. The COCO tutorial dependencies are
-installed by default.
-Set the backend before running the script.
+This tutorial is heavier than the MNIST and TCGA examples. It requires:
 
-.. code-block:: bash
+- the PyTorch backend for Keras 3
+- `FiftyOne <https://voxel51.com/fiftyone/>`_ to access COCO
+- `transformers <https://huggingface.co/docs/transformers/index>`_ for the caption encoder
+- internet access or local copies of the COCO image and caption files
 
-   export KERAS_BACKEND=tensorflow
-   pip install -e ".[tf-cpu]"
+In practice, a GPU or Apple Silicon machine is strongly recommended.
 
-1. Imports and configuration
-----------------------------
+1. Set up the runtime and core configuration
+--------------------------------------------
 
-The tutorial script lives at :mod:`deep_lvpm.tutorial.tutorial_coco_tf`.
-It defines the dataset/model hyperparameters up front for easy editing in an IDE.
+We begin by forcing the Keras torch backend and defining the main tutorial
+settings in one place. The most important user-editable choices are:
+
+- ``NUM_CAPTION_VIEWS``: how many captions per image to keep
+- ``NDIMS``: the number of DLVs to learn
+- ``BATCH_SIZE`` and ``BENCHMARK_EPOCHS``: the main training schedule
 
 .. code-block:: python
 
    import os
-   os.environ["KERAS_BACKEND"] = "tensorflow"
+   import json
+   import random
+   import zipfile
+   from collections import defaultdict
+
+   os.environ.setdefault("KERAS_BACKEND", "torch")
+   os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+   os.environ.setdefault("USE_TF", "0")
+   os.environ.setdefault("USE_TORCH", "1")
+   os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
    import numpy as np
-   import tensorflow as tf
+   import matplotlib.pyplot as plt
+   from PIL import Image
+   import torch
+   import torch.nn as nn
+   from torch.utils.data import DataLoader, Dataset
    import keras
    from keras import layers
+   from transformers import AutoModel, AutoTokenizer
    import fiftyone as fo
    import fiftyone.zoo as foz
 
    from deep_lvpm.model import StructuralModel
+   from deep_lvpm.multi_model import CLIP, VICReg, LeJEPA
 
    NUM_CAPTION_VIEWS = 5
    IMG_SIZE = 224
    MAX_TOKENS = 32
-   VOCAB_SIZE = 30000
-   EMBED_DIM = 256
-   TRANSFORMER_HEADS = 4
-   TRANSFORMER_FF_DIM = 512
+   TEXT_MODEL_NAME = "distilbert-base-uncased"
+   TEXT_DROPOUT = 0.10
 
-2. Load COCO and build five-caption groups
-------------------------------------------
+   NDIMS = 512
+   BATCH_SIZE = 512
+   BENCHMARK_EPOCHS = 30
 
-COCO images are loaded from the FiftyOne zoo. The script then loads the official
-caption annotation JSON files and links each image to its five captions. Since
-COCO's public ``test`` split does not include captions, the tutorial creates a
-held-out test subset from the training split.
+   BENCHMARK_TRAIN_SAMPLES = 20000
+   BENCHMARK_VAL_SAMPLES = 5000
+   BENCHMARK_SAMPLES = 2048
+
+   NUM_WORKERS = 0
+   RUN_BASELINES = False
+   RETRIEVAL_KS = (1, 5, 10)
+   RANK_BOOTSTRAP_SAMPLES = 1000
+
+   LEARNING_RATE_START = 1e-5
+   LEARNING_RATE_END = 1e-4
+   LEARNING_RATE_WARMUP_EPOCHS = 5
+
+   TEST_FRACTION = 0.10
+   SEED = 51
+   COCO_CAPTIONS_DIR = None
+
+2. Define the COCO path model
+-----------------------------
+
+DLVPM needs a path matrix describing which views should be associated. In this
+tutorial we use a star-shaped path model:
+
+- the image is connected to each caption
+- the captions are not directly connected to one another
+
+That gives a six-view path matrix with one image node and five caption nodes.
 
 .. code-block:: python
 
+   Path = np.array(
+       [
+           [0, 1, 1, 1, 1, 1],
+           [1, 0, 0, 0, 0, 0],
+           [1, 0, 0, 0, 0, 0],
+           [1, 0, 0, 0, 0, 0],
+           [1, 0, 0, 0, 0, 0],
+           [1, 0, 0, 0, 0, 0],
+       ],
+       dtype="float32",
+   )
+
+This is a useful first multimodal example because the shared structure should
+capture image semantics that are consistently reflected in natural language.
+
+3. Load the COCO image splits
+-----------------------------
+
+We next load the 2017 training and validation image splits using FiftyOne. The
+images are loaded first; the caption annotations are attached in the next step.
+
+.. code-block:: python
+
+   FO_TRAIN_SPLIT = "train"
+   FO_VAL_SPLIT = "validation"
+   FO_LABEL_TYPES = []
+   FO_CLASSES = None
+   FO_MAX_SAMPLES_TRAIN = None
+   FO_MAX_SAMPLES_VAL = None
+   FO_SHUFFLE = True
+
    train_view = foz.load_zoo_dataset(
        "coco-2017",
-       split="train",
-       label_types=[],
-       shuffle=True,
-       seed=51,
+       split=FO_TRAIN_SPLIT,
+       label_types=FO_LABEL_TYPES,
+       classes=FO_CLASSES,
+       max_samples=FO_MAX_SAMPLES_TRAIN,
+       shuffle=FO_SHUFFLE,
+       seed=SEED,
        dataset_name="dlvpm-coco2017-train",
        include_id=True,
    )
 
    val_view = foz.load_zoo_dataset(
        "coco-2017",
-       split="validation",
-       label_types=[],
-       shuffle=True,
-       seed=51,
+       split=FO_VAL_SPLIT,
+       label_types=FO_LABEL_TYPES,
+       classes=FO_CLASSES,
+       max_samples=FO_MAX_SAMPLES_VAL,
+       shuffle=FO_SHUFFLE,
+       seed=SEED,
        dataset_name="dlvpm-coco2017-val",
        include_id=True,
    )
 
+4. Load caption annotations and build six-view samples
+------------------------------------------------------
+
+The next stage links each image to its five official COCO captions. The helper
+functions in the tutorial do three things:
+
+- locate the official ``captions_train2017.json`` and ``captions_val2017.json`` files
+- load the caption annotations into dictionaries keyed by image id
+- extract one image filepath and five captions per sample
+
+.. code-block:: python
+
+   COCO_CAPTIONS_URL = "https://images.cocodataset.org/annotations/annotations_trainval2017.zip"
+   COCO_CAPTIONS_ARCHIVE = "annotations_trainval2017.zip"
+   COCO_CAPTIONS_CACHE_SUBDIR = "deep_lvpm/coco"
+
+   def resolve_coco_caption_annotations(split: str) -> str:
+       ...
+
+   def load_coco_captions(annotation_path: str) -> dict[int, list[str]]:
+       ...
+
+   def extract_coco_image_id(sample: "fo.Sample") -> int | None:
+       ...
+
+   def coco_view_to_examples(
+       dataset: "fo.Dataset",
+       captions_by_image_id: dict[int, list[str]],
+   ) -> tuple[list[str], list[list[str]]]:
+       ...
+
    train_caption_annotations = load_coco_captions(
-       resolve_coco_caption_annotations("train")
+       resolve_coco_caption_annotations(FO_TRAIN_SPLIT)
    )
    val_caption_annotations = load_coco_captions(
-       resolve_coco_caption_annotations("validation")
+       resolve_coco_caption_annotations(FO_VAL_SPLIT)
    )
 
-   # Each example is now:
-   #   image path -> [caption_1, caption_2, caption_3, caption_4, caption_5]
+   train_paths_all, train_caption_sets_all = coco_view_to_examples(
+       train_view,
+       train_caption_annotations,
+   )
+   val_paths, val_caption_sets = coco_view_to_examples(
+       val_view,
+       val_caption_annotations,
+   )
 
-3. Define EfficientNetB0 and Transformer measurement models
+   rng = np.random.default_rng(SEED)
+   perm = rng.permutation(len(train_paths_all))
+   num_test = max(1, int(TEST_FRACTION * len(train_paths_all)))
+   num_test = min(num_test, len(train_paths_all) - 1)
+   test_idx = perm[:num_test]
+   train_idx = perm[num_test:]
+
+   train_paths = [train_paths_all[i] for i in train_idx]
+   train_caption_sets = [train_caption_sets_all[i] for i in train_idx]
+   test_paths = [train_paths_all[i] for i in test_idx]
+   test_caption_sets = [train_caption_sets_all[i] for i in test_idx]
+
+At the end of this step, each training example contains:
+
+- one image path
+- five human captions
+
+5. Tokenize the caption views
+-----------------------------
+
+The caption views are processed with a DistilBERT encoder, so we tokenize the
+text using the matching Hugging Face tokenizer.
+
+.. code-block:: python
+
+   RESAMPLE_BICUBIC = Image.Resampling.BICUBIC if hasattr(Image, "Resampling") else Image.BICUBIC
+   text_tokenizer = AutoTokenizer.from_pretrained(TEXT_MODEL_NAME, use_fast=True)
+
+   def tokenize_caption_sets(caption_sets: list[list[str]]) -> tuple[np.ndarray, np.ndarray]:
+       flat_captions = np.asarray(caption_sets, dtype=object).reshape(-1).tolist()
+       encoded = text_tokenizer(
+           flat_captions,
+           padding="max_length",
+           truncation=True,
+           max_length=MAX_TOKENS,
+           return_tensors="np",
+       )
+       token_ids = encoded["input_ids"].astype("int32").reshape(-1, NUM_CAPTION_VIEWS, MAX_TOKENS)
+       attention_mask = encoded["attention_mask"].astype("int32").reshape(
+           -1,
+           NUM_CAPTION_VIEWS,
+           MAX_TOKENS,
+       )
+       return token_ids, attention_mask
+
+6. Define measurement models for the image and caption views
 ------------------------------------------------------------
 
-The image view uses EfficientNetB0 (ImageNet weights) with a small projection head.
-The text view uses token and positional embeddings followed by a Transformer encoder block.
+DLVPM requires one measurement model per data view. In this tutorial:
+
+- the image view uses ``EfficientNetB0``
+- each caption view uses a DistilBERT encoder followed by a Dense projection
+
+Because the caption backbone is a native PyTorch module, the tutorial uses a
+small wrapper layer so it can be called inside a Keras model running on the
+torch backend.
 
 .. code-block:: python
 
-   image_inputs = keras.Input(shape=(IMG_SIZE, IMG_SIZE, 3), name="image")
-   image_base = keras.applications.EfficientNetB0(
-       include_top=False,
-       weights="imagenet",
-       pooling="avg",
-       input_shape=(IMG_SIZE, IMG_SIZE, 3),
-   )
-   x_image = keras.applications.efficientnet.preprocess_input(image_inputs)
-   x_image = image_base(x_image, training=False)
-   image_outputs = layers.Dense(128, activation="relu", name="image_projection")(x_image)
-   image_model = keras.Model(image_inputs, image_outputs)
+   class TorchModuleLayer(keras.layers.Layer):
+       """Wrap a PyTorch module for execution inside a Keras torch-backend model."""
+       ...
 
-   text_inputs = keras.Input(shape=(MAX_TOKENS,), dtype="int32", name="caption_tokens")
-   token_embeddings = layers.Embedding(VOCAB_SIZE, EMBED_DIM, mask_zero=True)(text_inputs)
-   position_indices = tf.range(start=0, limit=MAX_TOKENS, delta=1)
-   position_embeddings = layers.Embedding(MAX_TOKENS, EMBED_DIM)(position_indices)
-   x_text = token_embeddings + position_embeddings
+   class TextEncoderModule(nn.Module):
+       """Caption encoder using a fully trainable pretrained DistilBERT backbone."""
 
-   # Transformer encoder block (MHA + FFN with residual connections)
-   ...
+       def __init__(self, model_name: str) -> None:
+           super().__init__()
+           self.backbone = AutoModel.from_pretrained(model_name)
+           self.dropout = nn.Dropout(TEXT_DROPOUT)
 
-4. Build multi-view datasets for DLVPM
---------------------------------------
+       def forward(self, inputs) -> torch.Tensor:
+           input_ids, attention_mask = inputs
+           outputs = self.backbone(
+               input_ids=input_ids.long().contiguous(),
+               attention_mask=attention_mask.long().contiguous(),
+           )
+           ...
 
-For each sample, the pipeline emits one image plus ``NUM_CAPTION_VIEWS`` tokenised text views.
-This structure is returned as ``(tuple(views),)`` so Keras treats it as one multi-input ``x``.
+   def build_image_encoder(NDIMS) -> keras.Model:
+       image_inputs = keras.Input(shape=(IMG_SIZE, IMG_SIZE, 3), name="image")
+       image_base = keras.applications.EfficientNetB0(
+           include_top=False,
+           weights="imagenet",
+           pooling="avg",
+           input_shape=(IMG_SIZE, IMG_SIZE, 3),
+       )
+       image_base.trainable = True
 
-.. code-block:: python
+       x_image = keras.applications.efficientnet.preprocess_input(image_inputs)
+       image_features = image_base(x_image, training=False)
+       image_outputs = layers.Dense(NDIMS, activation="relu", name="image_projection")(image_features)
+       return keras.Model(image_inputs, image_outputs, name="coco_efficientnetb0")
 
-   def make_multiview_dataset(image_paths, caption_sets, training):
-       dataset = tf.data.Dataset.from_tensor_slices((image_paths, caption_sets))
+   def build_text_encoder(NDIMS) -> keras.Model:
+       token_ids = keras.Input(shape=(MAX_TOKENS,), dtype="int32", name="caption_token_ids")
+       attention_mask = keras.Input(shape=(MAX_TOKENS,), dtype="int32", name="caption_attention_mask")
+       text_features = TorchModuleLayer(
+           TextEncoderModule(model_name=TEXT_MODEL_NAME),
+           input_dtype=("int32", "int32"),
+           name="caption_backbone",
+       )([token_ids, attention_mask])
+       text_outputs = layers.Dense(NDIMS, activation="relu", name="text_projection")(text_features)
+       return keras.Model([token_ids, attention_mask], text_outputs, name="coco_caption_torch")
 
-       def map_example(image_path, captions):
-           image = tf.io.decode_jpeg(tf.io.read_file(image_path), channels=3)
-           image = tf.image.resize(image, [IMG_SIZE, IMG_SIZE])
-           image = tf.cast(image, tf.float32)
+   def build_model_list(NDIMS) -> list[keras.Model]:
+       image_model = build_image_encoder(NDIMS)
+       caption_model = build_text_encoder(NDIMS)
+       return [image_model] + [caption_model for _ in range(NUM_CAPTION_VIEWS)]
 
-           caption_tokens = tf.cast(text_vectorizer(captions), tf.int32)
+7. Build multiview dataloaders
+------------------------------
 
-           views = [image] + [caption_tokens[i] for i in range(NUM_CAPTION_VIEWS)]
-           return (tuple(views),)
-
-       return dataset.map(map_example).batch(128).prefetch(tf.data.AUTOTUNE)
-
-5. Build and compile the StructuralModel
-----------------------------------------
-
-The model list contains one image encoder and repeated references to the same text encoder
-(shared caption weights across text views).
-
-.. code-block:: python
-
-   model_list = [image_model] + [caption_model for _ in range(NUM_CAPTION_VIEWS)]
-   regularizer_list = [None for _ in model_list]
-
-   n_views = len(model_list)
-   Path = tf.ones((n_views, n_views), dtype=tf.float32) - tf.eye(n_views, dtype=tf.float32)
-
-   dlvpm_model = StructuralModel(
-       Path=Path,
-       model_list=model_list,
-       regularizer_list=regularizer_list,
-       tot_num=len(train_paths),
-       ndims=256,
-       orthogonalization="zca",
-       diag_offset=1e-6,
-       train_DLV=True,
-   )
-
-   optimizer_list = [keras.optimizers.Adam(learning_rate=1e-5, clipnorm=1.0)
-                     for _ in model_list]
-   dlvpm_model.compile(optimizer_list)
-
-6. Benchmark against CLIP, VICReg, and LeJEPA
----------------------------------------------
-
-The script trains DLVPM,
-CLIP, VICReg, and LeJEPA with the same COCO pipeline and compares cross-modal retrieval quality.
-
-Benchmark task definition
-^^^^^^^^^^^^^^^^^^^^^^^^^
-
-For each image in a held-out set, retrieve its matching five-caption group from
-a pool of caption groups (image-to-group retrieval, abbreviated ``i2g``), and
-also retrieve the matching image given the aggregated caption group
-(``g2i``). The script aggregates the five caption embeddings for each image
-into one caption-group embedding before ranking, so the benchmark measures
-whether a method links the image and caption set as a whole.
-
-Metrics:
-
-1. ``Top-K`` group accuracy (``i2g_topK`` and ``g2i_topK``) reports whether the
-   correct caption group or image is retrieved within the top ``K`` ranked
-   candidates. ``i2g_top1 = 0.45`` means 45% of images retrieve the correct
-   caption group as their first-ranked match.
-2. Median rank is computed directly on group-level ranks. Lower values indicate
-   that matched image/caption groups appear nearer the top of the ranked list.
-
-Higher Top-K accuracy and lower median rank both indicate better cross-modal
-retrieval performance. Reporting both numbers provides a quick way to compare
-strict matching quality and overall ordering quality.
-
-Benchmark configuration (in script)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The dataloader returns one image tensor plus five tokenized caption views per
+sample. This is the exact six-view structure that ``StructuralModel`` expects.
 
 .. code-block:: python
 
-   BENCHMARK_EPOCHS = 5
-   BENCHMARK_TRAIN_SAMPLES = 20000
-   BENCHMARK_VAL_SAMPLES = 5000
-   BENCHMARK_SAMPLES = 2048
-   RETRIEVAL_KS = (1, 5, 10)
+   class CocoRetrievalDataset(Dataset):
+       """Load COCO images and five tokenized captions per sample."""
+       ...
 
-These knobs determine how many COCO samples are used for training/validation/testing
-the benchmark models and which Top-K cutoffs are reported.
+   def collate_multiview(batch):
+       views = list(zip(*batch))
+       collated_views = tuple(torch.stack(list(view), dim=0) for view in views)
+       return (collated_views,)
 
-Implementation in the tutorial
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   def make_multiview_loader(
+       image_paths: list[str],
+       caption_sets: list[list[str]],
+       training: bool,
+   ) -> DataLoader:
+       caption_token_ids, caption_attention_mask = tokenize_caption_sets(caption_sets)
+       dataset = CocoRetrievalDataset(
+           image_paths=image_paths,
+           caption_token_ids=caption_token_ids,
+           caption_attention_mask=caption_attention_mask,
+           training=training,
+       )
+       return DataLoader(
+           dataset,
+           batch_size=BATCH_SIZE,
+           shuffle=training,
+           drop_last=training,
+           num_workers=NUM_WORKERS,
+           collate_fn=collate_multiview,
+       )
 
-The script performs the benchmark by:
+8. Build and train the DLVPM model
+----------------------------------
 
-1. Building fixed benchmark train/validation/test subsets.
-2. Training DLVPM, CLIP, VICReg, and LeJEPA for the same number of epochs.
-3. Collecting image embeddings plus all five caption embeddings from each trained model.
-4. L2-normalising embeddings.
-5. Aggregating each five-caption set into one normalized caption-group embedding.
-6. Computing cosine similarity between images and caption groups.
-7. Reporting ``i2g_topK``, ``g2i_topK``, and median ranks in a comparison table.
+Once the measurement models and loaders are ready, we can build the DLVPM
+structural model in the same way as the other tutorials. The most important
+arguments are:
+
+- ``Path``: the six-view image-caption path matrix
+- ``model_list``: one image encoder plus five caption encoders
+- ``tot_num``: the total number of training samples
+- ``ndims``: the number of DLVs
+- ``order=True``: order latent variables by shared structure
+- ``order_association_cutoff=0.99``: discard final ordered dimensions once the
+  cumulative association mass has saturated
 
 .. code-block:: python
 
@@ -229,60 +372,145 @@ The script performs the benchmark by:
    benchmark_val_n = min(BENCHMARK_VAL_SAMPLES, len(val_paths))
    benchmark_test_n = min(BENCHMARK_SAMPLES, len(test_paths))
 
-   benchmark_train_ds = make_multiview_dataset(
-       train_paths[:benchmark_train_n], train_caption_sets[:benchmark_train_n], training=True
+   benchmark_train_paths = train_paths[:benchmark_train_n]
+   benchmark_train_caption_sets = train_caption_sets[:benchmark_train_n]
+   benchmark_val_paths = val_paths[:benchmark_val_n]
+   benchmark_val_caption_sets = val_caption_sets[:benchmark_val_n]
+   benchmark_test_paths = test_paths[:benchmark_test_n]
+   benchmark_test_caption_sets = test_caption_sets[:benchmark_test_n]
+
+   benchmark_train_ds = make_multiview_loader(
+       benchmark_train_paths,
+       benchmark_train_caption_sets,
+       training=True,
    )
-   benchmark_val_ds = make_multiview_dataset(
-       val_paths[:benchmark_val_n], val_caption_sets[:benchmark_val_n], training=False
+   benchmark_val_ds = make_multiview_loader(
+       benchmark_val_paths,
+       benchmark_val_caption_sets,
+       training=False,
    )
-   benchmark_test_ds = make_multiview_dataset(
-       test_paths[:benchmark_test_n], test_caption_sets[:benchmark_test_n], training=False
+   benchmark_test_ds = make_multiview_loader(
+       benchmark_test_paths,
+       benchmark_test_caption_sets,
+       training=False,
    )
 
-   benchmark_results = {}
+   steps_per_epoch = max(1, benchmark_train_n // BATCH_SIZE)
+   warmup_steps = max(1, steps_per_epoch * LEARNING_RATE_WARMUP_EPOCHS)
+   lr_schedule = keras.optimizers.schedules.PiecewiseConstantDecay(
+       boundaries=[warmup_steps],
+       values=[LEARNING_RATE_START, LEARNING_RATE_END],
+   )
 
-   # Train each method with identical settings.
-   dlvpm_benchmark = StructuralModel(...)
-   ...
-   benchmark_results["DLVPM"] = retrieval_metrics(dlvpm_img, dlvpm_txt)
+   dlvpm_benchmark_models = build_model_list(NDIMS)
+   dlvpm_benchmark = StructuralModel(
+       Path=Path,
+       model_list=dlvpm_benchmark_models,
+       regularizer_list=[None for _ in dlvpm_benchmark_models],
+       tot_num=benchmark_train_n,
+       ndims=NDIMS,
+       orthogonalization="zca",
+       diag_offset=1e-6,
+       train_DLV=True,
+       momentum=0.95,
+       order=True,
+       order_association_cutoff=0.99,
+   )
 
-   clip_model = CLIP(...)
-   ...
-   benchmark_results["CLIP"] = retrieval_metrics(clip_img, clip_txt)
+   dlvpm_optimizers = [
+       keras.optimizers.Adam(learning_rate=lr_schedule, clipnorm=1.0)
+       for _ in dlvpm_benchmark_models
+   ]
+   dlvpm_benchmark.compile(dlvpm_optimizers)
 
-   vic_model = VICReg(...)
-   ...
-   benchmark_results["VICReg"] = retrieval_metrics(vic_img, vic_txt)
+   dlvpm_benchmark.fit(
+       benchmark_train_ds,
+       validation_data=benchmark_val_ds,
+       epochs=BENCHMARK_EPOCHS,
+       verbose=True,
+   )
 
-   lejepa_model = LeJEPA(...)
-   ...
-   benchmark_results["LeJEPA"] = retrieval_metrics(lejepa_img, lejepa_txt)
+9. Evaluate image-text retrieval
+--------------------------------
 
-   # Compute and print retrieval metrics table
-   header = ["Method", "i2g_top1", "g2i_top1", ...]
-   ...
+After training, we test whether matching images and caption sets are close in
+the learned latent space. The tutorial does this by:
+
+- collecting image embeddings and caption embeddings
+- averaging the five captions for each image into one caption-group embedding
+- ranking image-to-caption and caption-to-image matches
+- reporting top-k accuracy and median rank
 
 .. code-block:: python
 
-   def retrieval_metrics(image_embeddings, text_embeddings, ks=(1, 5, 10)):
-       image_embeddings = l2_normalize(image_embeddings.astype("float32"))
-       group_embeddings = aggregate_caption_groups(text_embeddings.astype("float32"))
-       group_similarity = image_embeddings @ group_embeddings.T
-       target_index = np.arange(image_embeddings.shape[0])
+   def collect_image_text_embeddings(
+       model: keras.Model,
+       dataset: DataLoader,
+       max_samples: int,
+   ) -> tuple[np.ndarray, np.ndarray]:
+       ...
 
-       i2g_order = np.argsort(-group_similarity, axis=1)
-       i2g_rank = np.argmax(i2g_order == target_index[:, None], axis=1) + 1
+   def aggregate_caption_groups(text_embeddings: np.ndarray) -> np.ndarray:
+       ...
 
-       g2i_order = np.argsort(-group_similarity.T, axis=1)
-       g2i_rank = np.argmax(g2i_order == target_index[:, None], axis=1) + 1
+   def retrieval_rank_arrays(
+       image_embeddings: np.ndarray,
+       text_embeddings: np.ndarray,
+   ) -> tuple[np.ndarray, np.ndarray]:
+       ...
 
-       metrics = {}
-       for k in ks:
-           metrics[f"i2g_top{k}"] = float(np.mean(i2g_rank <= k))
-           metrics[f"g2i_top{k}"] = float(np.mean(g2i_rank <= k))
-       metrics["i2g_median_rank"] = float(np.median(i2g_rank))
-       metrics["g2i_median_rank"] = float(np.median(g2i_rank))
-       return metrics
+   def retrieval_metrics_from_ranks(
+       i2g_rank: np.ndarray,
+       g2i_rank: np.ndarray,
+       ks: tuple[int, ...] = RETRIEVAL_KS,
+   ) -> dict[str, float]:
+       ...
 
-The benchmark section is implemented directly in
-:mod:`deep_lvpm.tutorial.tutorial_coco_tf`.
+   dlvpm_img, dlvpm_txt = collect_image_text_embeddings(
+       dlvpm_benchmark,
+       benchmark_test_ds,
+       max_samples=benchmark_test_n,
+   )
+
+   benchmark_results, rank_results = evaluate_retrieval_result(
+       dlvpm_img,
+       dlvpm_txt,
+   )
+
+Typical summary metrics include:
+
+- ``i2g_top1`` and ``g2i_top1``: top-1 retrieval accuracy
+- ``i2g_top5`` and ``g2i_top5``: top-5 retrieval accuracy
+- ``i2g_median_rank`` and ``g2i_median_rank``: median rank of the correct match
+
+10. Optional multimodal baselines
+---------------------------------
+
+If ``RUN_BASELINES=True``, the tutorial also trains CLIP, VICReg, and LeJEPA
+using the same image and caption encoders. This gives a direct comparison
+between DLVPM and several other multimodal representation-learning methods on
+the same held-out retrieval task.
+
+.. code-block:: python
+
+   if RUN_BASELINES:
+       clip_model = CLIP(...)
+       vic_model = VICReg(...)
+       lejepa_model = LeJEPA(...)
+
+This is useful if your goal is benchmarking rather than simply learning to use
+DLVPM.
+
+Summary
+-------
+
+This tutorial illustrates a full multimodal DLVPM workflow:
+
+- define a structural path model over six views
+- build separate image and text measurement models
+- train DLVPM to align the views in a shared latent space
+- evaluate the latent representation with a retrieval benchmark
+
+If you want a simpler starting point, begin with the :doc:`mnist` or
+:doc:`tcga_torch` tutorials and then return to this COCO example once you are
+comfortable with the general DLVPM pattern.

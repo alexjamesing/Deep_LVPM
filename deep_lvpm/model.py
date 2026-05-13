@@ -115,8 +115,6 @@ class StructuralModel(keras.Model):
         attention_mse=False,
         attention_gate=0.3,
         order=False,
-        order_type="callback",
-        order_loss_weight=1.0,
         order_association_cutoff=None,
         **kwargs,
     ):
@@ -158,10 +156,6 @@ class StructuralModel(keras.Model):
         self.order = bool(order)
         if self.order and self.orthogonalization != 'zca':
             raise ValueError("'order' is only available when orthogonalization='zca'.")
-        self.order_type = str(order_type).lower()
-        if self.order_type not in {"callback", "loss", "both"}:
-            raise ValueError("order_type must be one of: 'callback', 'loss', 'both'.")
-        self.order_loss_weight = float(order_loss_weight)
         self.order_association_cutoff = (
             None if order_association_cutoff is None else float(order_association_cutoff)
         )
@@ -589,7 +583,7 @@ class StructuralModel(keras.Model):
         return ops.flip(eigvecs, axis=1)
 
     def _use_order_callback(self):
-        return self.order and self.order_type in {"callback", "both"}
+        return self.order
 
     def _uses_order_basis(self):
         return self.order
@@ -745,7 +739,7 @@ class StructuralModel(keras.Model):
 
         rotated = False
         rotation = None
-        if self._use_order_callback() or self._use_order_dimension_pruning():
+        if self._use_order_callback():
             rotation = self._rotation_from_order_moving_omega()
             self._apply_structural_rotation(rotation)
             rotated = True
@@ -1290,8 +1284,6 @@ class StructuralModel(keras.Model):
         callbacks = list(kwargs.pop("callbacks", []) or [])
         if self._use_order_callback():
             callbacks.append(self._StructuralOrderCallback(self))
-        elif self._use_order_dimension_pruning():
-            callbacks.append(self._StructuralOrderCallback(self))
         kwargs["callbacks"] = callbacks
         return super().fit(*args, **kwargs)
 
@@ -1832,8 +1824,6 @@ class StructuralModel(keras.Model):
             "attention_mse": self.attention_mse,
             "attention_gate": self.attention_gate,
             "order": self.order,
-            "order_type": self.order_type,
-            "order_loss_weight": self.order_loss_weight,
             "order_association_cutoff": self.order_association_cutoff,
         }
     
@@ -1891,412 +1881,3 @@ class StructuralModel(keras.Model):
         on models in model_list"""
 
         return
-    
-
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Second-order DLVPM implemented as block-sequential gradient descent.
-
-This version keeps DLVPM itself intact:
-- the same measurement-model API,
-- the same path matrix,
-- the same DLVPM losses,
-- the same orthogonalisation machinery,
-- the same missing-view handling,
-- the same per-view optimizers.
-
-The only algorithmic change is the optimisation schedule:
-one view is the active block for `block_steps` mini-batches, only that
-view receives a gradient update, and then training moves to the next
-view in sequence.
-
-This is "second-order" only in the broad RGCCA / Gauss–Seidel sense
-requested by the user: blockwise sequential optimisation. It is not a
-Newton or Hessian-based method.
-"""
-
-import numpy as np
-import keras as keras
-from keras import ops
-
-
-be = keras.backend.backend()  # 'tensorflow' | 'torch'
-
-if be == "tensorflow":
-    try:
-        import tensorflow as tf
-    except ImportError as e:  # pragma: no cover
-        raise RuntimeError(
-            "Tensorflow backend requested but it is not installed. "
-            "Install Tensorflow or switch Keras backend to Torch."
-        ) from e
-elif be == "torch":
-    try:
-        import torch
-    except ImportError as e:  # pragma: no cover
-        raise RuntimeError(
-            "Torch backend requested but it is not installed. "
-            "Install Torch or switch Keras backend to TensorFlow."
-        ) from e
-
-
-@keras.utils.register_keras_serializable(
-    package="deep_lvpm", name="SecondOrderStructuralModel"
-)
-class SecondOrderStructuralModel(StructuralModel):
-    """
-    DLVPM trained with block-sequential gradient descent.
-
-    Compared with StructuralModel, the objective function and layer stack are
-    unchanged. The only change is that one view is selected as the active view,
-    gradient descent is applied only to that view for `block_steps` batches,
-    and then the active view moves to the next view in a cyclic schedule.
-
-    Parameters added on top of StructuralModel
-    ------------------------------------------
-    block_steps : int
-        Number of mini-batches spent on one active view before switching.
-
-    view_sequence : list[int] or None
-        Explicit order in which views are updated. If None, the model updates
-        every view whose path-model row contains at least one connection.
-    """
-
-    def __init__(
-        self,
-        Path,
-        model_list,
-        regularizer_list,
-        tot_num,
-        ndims,
-        orthogonalization="Moore-Penrose",
-        momentum=0.95,
-        epsilon=1e-4,
-        train_DLV=True,
-        run_from_config=False,
-        is_siamese=False,
-        diag_offset=1e-3,
-        sparse_l1_list=0.0,
-        attention_mse=False,
-        attention_gate=0.3,
-        order=False,
-        order_type="callback",
-        order_loss_weight=1.0,
-        block_steps=4,
-        view_sequence=None,
-        **kwargs,
-    ):
-        self.block_steps = int(block_steps)
-        if self.block_steps <= 0:
-            raise ValueError("block_steps must be a positive integer.")
-
-        self._requested_view_sequence = None if view_sequence is None else list(view_sequence)
-
-        super().__init__(
-            Path=Path,
-            model_list=model_list,
-            regularizer_list=regularizer_list,
-            tot_num=tot_num,
-            ndims=ndims,
-            orthogonalization=orthogonalization,
-            momentum=momentum,
-            epsilon=epsilon,
-            train_DLV=train_DLV,
-            run_from_config=run_from_config,
-            is_siamese=is_siamese,
-            diag_offset=diag_offset,
-            sparse_l1_list=sparse_l1_list,
-            attention_mse=attention_mse,
-            attention_gate=attention_gate,
-            order=order,
-            order_type=order_type,
-            order_loss_weight=order_loss_weight,
-            **kwargs,
-        )
-
-        self.view_sequence = self._build_view_sequence(self._requested_view_sequence)
-        self._schedule_size = len(self.view_sequence)
-
-        # Integer state for the block-sequential schedule.
-        self._schedule_position = self.add_weight(
-            name="second_order_schedule_position",
-            shape=(),
-            initializer="zeros",
-            dtype="int32",
-            trainable=False,
-        )
-        self._batches_in_active_view = self.add_weight(
-            name="second_order_batches_in_active_view",
-            shape=(),
-            initializer="zeros",
-            dtype="int32",
-            trainable=False,
-        )
-
-        if be == "tensorflow":
-            self._view_sequence_tensor = tf.constant(self.view_sequence, dtype=tf.int32)
-            self._schedule_size_tensor = tf.constant(self._schedule_size, dtype=tf.int32)
-
-        self.active_view_tracker = _LastValueMetric(name="active_view")
-
-    # ------------------------------------------------------------------
-    # Configuration helpers
-    # ------------------------------------------------------------------
-    def _build_view_sequence(self, requested_sequence):
-        n_views = len(self.model_list)
-
-        if requested_sequence is not None:
-            sequence = [int(v) for v in requested_sequence]
-            if len(sequence) == 0:
-                raise ValueError("view_sequence cannot be empty.")
-            for v in sequence:
-                if v < 0 or v >= n_views:
-                    raise ValueError(
-                        f"view_sequence contains invalid view index {v}; "
-                        f"valid range is [0, {n_views - 1}]."
-                    )
-            return sequence
-
-        sequence = [
-            vie for vie in range(n_views)
-            if np.any(self._path_array[vie, :] != 0.0)
-        ]
-        if not sequence:
-            sequence = list(range(n_views))
-        return sequence
-
-    def get_config(self):
-        config = super().get_config()
-        config.update(
-            {
-                "block_steps": self.block_steps,
-                "view_sequence": list(self.view_sequence),
-            }
-        )
-        return config
-
-    @classmethod
-    def from_config(cls, config):
-        config.setdefault("block_steps", 4)
-        config.setdefault("view_sequence", None)
-        return super().from_config(config)
-
-    # ------------------------------------------------------------------
-    # Compile / fit
-    # ------------------------------------------------------------------
-    def compile(self, optimizer, run_eagerly=False):
-        """
-        Compile the per-view submodels exactly as in StructuralModel, but allow
-        `run_eagerly` to be set explicitly.
-        """
-        keras.Model.compile(self, run_eagerly=run_eagerly)
-
-        if isinstance(optimizer, list):
-            if len(optimizer) != len(self.model_list):
-                raise ValueError(
-                    f"Expected {len(self.model_list)} optimizers, got {len(optimizer)}."
-                )
-            for vie in range(len(self.model_list)):
-                self.model_list[vie].compile(optimizer[vie])
-        elif isinstance(optimizer, keras.optimizers.Optimizer):
-            if self.is_siamese:
-                self.model_list[0].compile(optimizer)
-            else:
-                for vie in range(len(self.model_list)):
-                    self.model_list[vie].compile(self._clone_optimizer(optimizer))
-        else:
-            raise TypeError(
-                "optimizer must either be a keras optimizer instance, or a list of them."
-            )
-
-    def _reset_second_order_schedule(self):
-        zero = ops.convert_to_tensor(0, dtype=self._schedule_position.dtype)
-        self._schedule_position.assign(zero)
-        self._batches_in_active_view.assign(zero)
-
-    def fit(self, *args, **kwargs):
-        callbacks = list(kwargs.pop("callbacks", []) or [])
-        has_progbar = any(isinstance(callback, keras.callbacks.ProgbarLogger) for callback in callbacks)
-        if not has_progbar:
-            callbacks.append(self._SecondOrderProgbarLogger())
-        kwargs["callbacks"] = callbacks
-        self._reset_second_order_schedule()
-        return super().fit(*args, **kwargs)
-
-    # ------------------------------------------------------------------
-    # Schedule helpers
-    # ------------------------------------------------------------------
-    def _current_active_view_tf(self):
-        return tf.gather(self._view_sequence_tensor, self._schedule_position)
-
-    def _current_active_view_torch(self):
-        position = int(np.asarray(keras.ops.convert_to_numpy(self._schedule_position)).item())
-        return int(self.view_sequence[position])
-
-    def _advance_schedule_tf(self):
-        one = tf.constant(1, dtype=self._batches_in_active_view.dtype)
-        new_batches = self._batches_in_active_view + one
-        rotate = new_batches >= tf.cast(self.block_steps, self._batches_in_active_view.dtype)
-        next_position = tf.math.floormod(
-            self._schedule_position + one,
-            self._schedule_size_tensor,
-        )
-
-        self._schedule_position.assign(
-            tf.where(rotate, next_position, self._schedule_position)
-        )
-        self._batches_in_active_view.assign(
-            tf.where(rotate, tf.zeros_like(new_batches), new_batches)
-        )
-
-    def _advance_schedule_torch(self):
-        position = int(np.asarray(keras.ops.convert_to_numpy(self._schedule_position)).item())
-        batches = int(np.asarray(keras.ops.convert_to_numpy(self._batches_in_active_view)).item())
-
-        batches += 1
-        if batches >= self.block_steps:
-            batches = 0
-            position = (position + 1) % self._schedule_size
-
-        self._schedule_position.assign(
-            ops.convert_to_tensor(position, dtype=self._schedule_position.dtype)
-        )
-        self._batches_in_active_view.assign(
-            ops.convert_to_tensor(batches, dtype=self._batches_in_active_view.dtype)
-        )
-
-    class _SecondOrderProgbarLogger(keras.callbacks.ProgbarLogger):
-        def _maybe_init_progbar(self):
-            super()._maybe_init_progbar()
-            if self.progbar is not None:
-                self.progbar.stateful_metrics.add("active_view")
-
-    # ------------------------------------------------------------------
-    # Training step
-    # ------------------------------------------------------------------
-    def train_step(self, inputs):
-        """
-        Block-sequential DLVPM training step.
-
-        Targets are still constructed exactly as in the original DLVPM:
-        all views are forward-propagated, the DLVPM orthogonalisation / weight
-        normalisation step is applied, and only the currently active view then
-        receives a gradient update against the fixed targets from that batch.
-        """
-
-        total_loss = [None] * len(self.model_list)
-        total_CC = [None] * len(self.model_list)
-        total_mse = [None] * len(self.model_list)
-        total_redundancy = [None] * len(self.model_list)
-
-        inputs = inputs[0]
-        inputs_nested = self.organize_inputs_by_model(inputs)
-        backend = keras.backend.backend()
-
-        if backend == "tensorflow":
-            active_view = self._current_active_view_tf()
-            y_raw, view_present = self._forward_views_with_missing(
-                inputs_nested,
-                training=self.train_DLV,
-            )
-            y_ortho, scale_fact = self._weight_normaliser(y_raw, view_present)
-        elif backend == "torch":
-            active_view = self._current_active_view_torch()
-            with torch.no_grad():
-                y_raw, view_present = self._forward_views_with_missing(
-                    inputs_nested,
-                    training=self.train_DLV,
-                )
-                y_ortho, scale_fact = self._weight_normaliser(y_raw, view_present)
-        else:  # pragma: no cover
-            raise NotImplementedError(
-                f"Backend '{backend}' not supported in custom train_step."
-            )
-
-        omega_batch = self._batch_structural_matrix(y_raw, view_present)
-        order_strength = self._order_strength_metric(omega_batch)
-        if self._uses_order_basis():
-            self._update_order_moving_omega(omega_batch)
-
-        for vie in range(len(self.model_list)):
-            source_mask = view_present[:, vie]
-
-            if backend == "tensorflow":
-                zero = self._zero_scalar(dtype=ops.dtype(y_ortho))
-                is_active = tf.equal(active_view, tf.cast(vie, active_view.dtype))
-
-                def run_step():
-                    observed_inputs = self._gather_rows(inputs_nested[vie], source_mask)
-                    return self._step_tf(
-                        vie,
-                        observed_inputs,
-                        y_ortho,
-                        view_present,
-                        source_mask,
-                        scale_fact[vie],
-                    )
-
-                def skip_missing():
-                    return zero, zero
-
-                def active_branch():
-                    return tf.cond(tf.reduce_any(source_mask), run_step, skip_missing)
-
-                def inactive_branch():
-                    return zero, zero
-
-                loss, mse_loss = tf.cond(is_active, active_branch, inactive_branch)
-
-            elif backend == "torch":
-                if vie == active_view and bool(torch.any(source_mask).item()):
-                    observed_inputs = self._gather_rows(inputs_nested[vie], source_mask)
-                    loss, mse_loss = self._step_torch(
-                        vie,
-                        observed_inputs,
-                        y_ortho,
-                        view_present,
-                        source_mask,
-                        scale_fact[vie],
-                    )
-                else:
-                    loss = self._zero_scalar(dtype=ops.dtype(y_ortho))
-                    mse_loss = self._zero_scalar(dtype=ops.dtype(y_ortho))
-
-            total_loss[vie] = ops.sum(loss)
-            total_CC[vie] = self.corr_metric(y_raw, y_raw[:, :, vie], vie, view_present)
-            total_redundancy[vie] = self.calculate_redundancy(
-                y_raw[:, :, vie],
-                row_mask=view_present[:, vie],
-            )
-            total_mse[vie] = mse_loss
-
-        # Only one block is optimized per batch, so the natural training loss is
-        # the active block loss rather than the mean over all blocks.
-        active_total_loss = ops.sum(ops.stack(total_loss))
-        active_mse_loss = ops.sum(ops.stack(total_mse))
-
-        self.loss_tracker_total.update_state(active_total_loss)
-        self.corr_tracker.update_state(ops.stack(total_CC))
-        self.loss_tracker_mse.update_state(active_mse_loss)
-        self.loss_tracker_redundancy.update_state(ops.stack(total_redundancy))
-        self.order_strength_tracker.update_state(order_strength)
-        self.active_view_tracker.update_state(active_view)
-
-        if backend == "tensorflow":
-            self._advance_schedule_tf()
-        else:
-            self._advance_schedule_torch()
-
-        return {
-            "total_loss": self.loss_tracker_total.result(),
-            "cross_metric": self.corr_tracker.result(),
-            "mse_loss": self.loss_tracker_mse.result(),
-            "redundancy": self.loss_tracker_redundancy.result(),
-            "order_strength": self.order_strength_tracker.result(),
-            "active_view": self.active_view_tracker.result(),
-        }
-
-    @property
-    def metrics(self):
-        return super().metrics + [self.active_view_tracker]

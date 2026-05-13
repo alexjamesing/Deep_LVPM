@@ -2,7 +2,19 @@
 # -*- coding: utf-8 -*-
 
 """
-MS COCO image-caption retrieval benchmark on the Keras torch backend.
+Tutorial: linking images and captions in MS COCO with DLVPM.
+
+This tutorial is written as a procedural walkthrough rather than as a
+standalone benchmark script. The aim is to show, step by step, how to:
+
+1. load COCO images,
+2. attach five human captions to every image,
+3. treat the image and the captions as six linked data views,
+4. train DLVPM to align those views in a shared latent space, and
+5. evaluate the learned representation with an image-text retrieval task.
+
+The code is intentionally top-down so that a new user can read one section,
+run it, inspect the objects that are created, and then move to the next step.
 """
 
 import os
@@ -59,54 +71,50 @@ if keras.backend.backend() != "torch":
         "KERAS_BACKEND=torch."
     )
 
-
-# -----------------------------------------------------------------------------
+# ============================================================
 # Configuration
-# -----------------------------------------------------------------------------
-def env_int(name: str, default: int) -> int:
-    value = os.environ.get(name)
-    return default if value is None else int(value)
-
-
+# ============================================================
+# These are the main settings most users will want to edit.
+#
+# In this tutorial each sample contributes:
+# - 1 image view
+# - 5 caption views
+#
+# The five captions are treated as separate language views rather than being
+# averaged together before training. This lets DLVPM learn which latent
+# variables are shared between the image and each human description.
 NUM_CAPTION_VIEWS = 5
 IMG_SIZE = 224
 MAX_TOKENS = 32
-TEXT_MODEL_NAME = os.environ.get("DLVPM_COCO_TEXT_MODEL", "distilbert-base-uncased")
+TEXT_MODEL_NAME = "distilbert-base-uncased"
 TEXT_DROPOUT = 0.10
-NUM_WORKERS = env_int("DLVPM_COCO_NUM_WORKERS", 0)
-NDIMS = env_int("DLVPM_COCO_NDIMS", 512)
-BATCH_SIZE = env_int("DLVPM_COCO_BATCH_SIZE", 512)
+
+NDIMS = 512
+BATCH_SIZE = 512
+BENCHMARK_EPOCHS = 30
+
+BENCHMARK_TRAIN_SAMPLES = 20000
+BENCHMARK_VAL_SAMPLES = 5000
+BENCHMARK_SAMPLES = 2048
+
+NUM_WORKERS = 0
+RUN_BASELINES = False
+RETRIEVAL_KS = (1, 5, 10)
+RANK_BOOTSTRAP_SAMPLES = 1000
+
 LEARNING_RATE_START = 1e-5
 LEARNING_RATE_END = 1e-4
 LEARNING_RATE_WARMUP_EPOCHS = 5
-BENCHMARK_EPOCHS = env_int("DLVPM_COCO_EPOCHS", 30)
-BENCHMARK_TRAIN_SAMPLES = env_int("DLVPM_COCO_TRAIN_SAMPLES", 20000)
-BENCHMARK_VAL_SAMPLES = env_int("DLVPM_COCO_VAL_SAMPLES", 5000)
-BENCHMARK_SAMPLES = env_int("DLVPM_COCO_TEST_SAMPLES", 2048)
-RUN_BASELINES = False
-RETRIEVAL_KS = (1, 5, 10)
-RANK_BOOTSTRAP_SAMPLES = env_int("DLVPM_COCO_RANK_BOOTSTRAPS", 1000)
-
-N_VIEWS = NUM_CAPTION_VIEWS + 1
-# Path = np.ones((N_VIEWS, N_VIEWS), dtype="float32") - np.eye(N_VIEWS, dtype="float32")
-
-Path = np.array(
-    [
-        [0, 1, 1, 1, 1, 1],
-        [1, 0, 0, 0, 0, 0],
-        [1, 0, 0, 0, 0, 0],
-        [1, 0, 0, 0, 0, 0],
-        [1, 0, 0, 0, 0, 0],
-        [1, 0, 0, 0, 0, 0],
-    ],
-    dtype="float32",
-)
-
-
 
 TEST_FRACTION = 0.10
 SEED = 51
 
+# If you have already downloaded the COCO caption annotations, point this
+# variable at the relevant directory. Otherwise the tutorial will try to find
+# them locally and then download them if needed.
+COCO_CAPTIONS_DIR = None
+
+# These settings control how the FiftyOne COCO data loader behaves.
 FO_TRAIN_SPLIT = "train"
 FO_VAL_SPLIT = "validation"
 FO_LABEL_TYPES = []
@@ -118,7 +126,31 @@ FO_SHUFFLE = True
 COCO_CAPTIONS_URL = "https://images.cocodataset.org/annotations/annotations_trainval2017.zip"
 COCO_CAPTIONS_ARCHIVE = "annotations_trainval2017.zip"
 COCO_CAPTIONS_CACHE_SUBDIR = "deep_lvpm/coco"
-COCO_CAPTIONS_DIR = os.environ.get("COCO_CAPTIONS_DIR")
+
+# The DLVPM path model is the key modelling assumption in this tutorial.
+#
+# We connect the image view to every caption view, but we do not directly
+# connect captions to each other. This produces a star-shaped path model:
+#
+# image <-> caption 1
+# image <-> caption 2
+# image <-> caption 3
+# image <-> caption 4
+# image <-> caption 5
+#
+# This is a natural first example for DLVPM because the shared signal should
+# represent image semantics that are consistently reflected in the captions.
+Path = np.array(
+    [
+        [0, 1, 1, 1, 1, 1],
+        [1, 0, 0, 0, 0, 0],
+        [1, 0, 0, 0, 0, 0],
+        [1, 0, 0, 0, 0, 0],
+        [1, 0, 0, 0, 0, 0],
+        [1, 0, 0, 0, 0, 0],
+    ],
+    dtype="float32",
+)
 
 
 # -----------------------------------------------------------------------------
@@ -135,11 +167,22 @@ elif torch.cuda.is_available():
 else:
     print("Using PyTorch CPU backend.")
 
+print(
+    "\nThis tutorial will build a six-view DLVPM model:\n"
+    "- view 1: the image\n"
+    "- views 2-6: five human captions for the same image\n"
+)
+
 
 # -----------------------------------------------------------------------------
 # 1. Load MS COCO from FiftyOne Zoo
 # -----------------------------------------------------------------------------
-print("Loading MS COCO train and validation splits with FiftyOne...")
+#
+# The first thing we need is the image data itself. We use FiftyOne's COCO
+# integration because it gives us a convenient way to load and inspect the
+# official 2017 train and validation splits.
+#
+print("Step 1/6: loading MS COCO images with FiftyOne...")
 
 train_view = foz.load_zoo_dataset(
     "coco-2017",
@@ -169,6 +212,16 @@ val_view = foz.load_zoo_dataset(
 # -----------------------------------------------------------------------------
 # 2. Load COCO captions and link each image to five captions
 # -----------------------------------------------------------------------------
+#
+# DLVPM works with multiple views of the same underlying sample. In COCO the
+# natural shared sample is an image, and the additional views are the human
+# captions that describe it.
+#
+# The next few helper functions do one simple job each:
+# - find the official caption annotations,
+# - load them into Python,
+# - match each image to its five captions.
+#
 def resolve_coco_caption_annotations(split: str) -> str:
     """Return the local path to the official COCO caption annotations JSON."""
     split_name = "train" if split == FO_TRAIN_SPLIT else "val"
@@ -354,11 +407,21 @@ print(f"Train samples: {len(train_paths)}")
 print(f"Validation samples: {len(val_paths)}")
 print(f"Test samples (held-out train subset): {len(test_paths)}")
 print(f"Captions per image: {NUM_CAPTION_VIEWS}")
+print(
+    "\nAt this point, each training example consists of:\n"
+    "- one image filepath\n"
+    f"- {NUM_CAPTION_VIEWS} human captions\n"
+)
 
 
 # -----------------------------------------------------------------------------
 # 3. Tokenize captions with a pretrained Hugging Face tokenizer
 # -----------------------------------------------------------------------------
+#
+# The language views need to be converted into tensors before they can be
+# passed into the text encoder. We use a pretrained DistilBERT tokenizer so
+# that the tokenization scheme matches the text encoder used later.
+#
 RESAMPLE_BICUBIC = Image.Resampling.BICUBIC if hasattr(Image, "Resampling") else Image.BICUBIC
 text_tokenizer = AutoTokenizer.from_pretrained(TEXT_MODEL_NAME, use_fast=True)
 
@@ -385,6 +448,17 @@ def tokenize_caption_sets(caption_sets: list[list[str]]) -> tuple[np.ndarray, np
 # -----------------------------------------------------------------------------
 # 4. Torch-backed measurement models
 # -----------------------------------------------------------------------------
+#
+# DLVPM itself learns the shared latent variables, but each data view still
+# needs its own measurement model.
+#
+# In this tutorial we use:
+# - an EfficientNet image encoder for the image view
+# - a DistilBERT encoder for each caption view
+#
+# The next wrapper layer lets us use native PyTorch modules inside a Keras model
+# when the torch backend is active.
+#
 class TorchModuleLayer(keras.layers.Layer):
     """Wrap a PyTorch module for execution inside a Keras torch-backend model."""
 
@@ -536,6 +610,14 @@ def build_model_list(NDIMS) -> list[keras.Model]:
 # -----------------------------------------------------------------------------
 # 5. Torch dataloaders
 # -----------------------------------------------------------------------------
+#
+# The model expects a batch with six views. The dataloader therefore returns:
+# - one tensor for images
+# - five pairs of tensors for the five caption views
+#
+# This looks a little verbose, but it keeps the data flow explicit. A new user
+# can print one batch here and see exactly what is being passed to the model.
+#
 class CocoRetrievalDataset(Dataset):
     """Load COCO images and five tokenized captions per sample."""
 
@@ -614,6 +696,12 @@ def make_multiview_loader(
 # -----------------------------------------------------------------------------
 # 6. Benchmark task: DLVPM vs CLIP vs VICReg on image-text retrieval
 # -----------------------------------------------------------------------------
+#
+# After training, we evaluate the learned representation using a retrieval task.
+# For each image we ask whether its matching caption set appears near the top of
+# the ranked list, and vice versa. This is a simple way to test whether the
+# latent space really links the image and language views.
+#
 def l2_normalize(matrix: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     norm = np.linalg.norm(matrix, axis=1, keepdims=True)
     return matrix / np.maximum(norm, eps)
@@ -807,7 +895,7 @@ def plot_rank_benchmark(
     plt.show()
 
 
-print("\nRunning retrieval benchmark on held-out COCO image/caption groups...")
+print("\nStep 6/6: training DLVPM and evaluating image-text retrieval...")
 
 benchmark_train_n = min(BENCHMARK_TRAIN_SAMPLES, len(train_paths))
 benchmark_val_n = min(BENCHMARK_VAL_SAMPLES, len(val_paths))
@@ -856,7 +944,19 @@ lr_schedule = keras.optimizers.schedules.PiecewiseConstantDecay(
     values=[LEARNING_RATE_START, LEARNING_RATE_END],
 )
 
-# DLVPM baseline
+# We now construct the actual DLVPM model.
+#
+# Notice how the key ingredients are exactly the same as in the other tutorials:
+# - `Path` defines which views should be associated
+# - `model_list` defines the measurement model for each view
+# - `regularizer_list` controls the final projection regularization
+# - `tot_num` is the total number of training samples
+# - `ndims` is the number of latent variables to learn
+#
+# Here we also use:
+# - `order=True` to order the latent variables by shared structure
+# - `order_association_cutoff=0.99` to discard the final ordered dimensions
+#   once the cumulative shared association mass has effectively saturated
 print("Training DLVPM benchmark model...")
 dlvpm_benchmark_models = build_model_list(NDIMS)
 dlvpm_benchmark = StructuralModel(
@@ -870,8 +970,7 @@ dlvpm_benchmark = StructuralModel(
     train_DLV=True,
     momentum=0.95,
     order=True,
-    order_type="callback",
-    order_association_cutoff=0.99
+    order_association_cutoff=0.99,
 )
 dlvpm_optimizers = [
     keras.optimizers.Adam(learning_rate=lr_schedule, clipnorm=1.0)
@@ -990,7 +1089,9 @@ if RUN_BASELINES:
     method_order.append("LeJEPA")
 
 print(
-    "\nGroup-level retrieval benchmark (higher Top-K accuracy is better, lower median rank is better):"
+    "\nFinal retrieval summary:\n"
+    "- higher Top-K values are better\n"
+    "- lower median rank values are better\n"
 )
 header = ["Method"]
 for k in RETRIEVAL_KS:

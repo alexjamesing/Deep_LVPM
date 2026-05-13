@@ -329,9 +329,10 @@ class DGCCA(keras.Model):
 
     This implements the DGCCA objective from the paper by learning one encoder
     per view, appending a Dense projection head of width `ndims`, and
-    optimizing the GCCA reconstruction objective on the resulting batch
-    embeddings. The shared eigensystem is built from the sum of the per-view
-    GCCA projection matrices.
+    optimizing the GCCA objective on the resulting batch embeddings. The shared
+    eigensystem is built from the sum of the per-view GCCA projection matrices,
+    and the loss is the paper-style MAXVAR GCCA objective rather than a
+    reconstruction-to-the-eigenvectors surrogate.
 
     Notes:
     - DGCCA uses all views jointly and does not use a path / adjacency matrix.
@@ -345,6 +346,7 @@ class DGCCA(keras.Model):
         regularizer_list,
         ndims,
         gcca_reg: float = 1e-3,
+        momentum: float = 0.0,
         eps: float = 1e-6,
         center_outputs: bool = True,
         run_from_config: bool = False,
@@ -355,10 +357,16 @@ class DGCCA(keras.Model):
 
         self.ndims = int(ndims)
         self.gcca_reg = float(gcca_reg)
+        self.momentum = float(momentum)
         self.eps = float(eps)
         self.center_outputs = bool(center_outputs)
         self.is_siamese = bool(is_siamese)
         self.regularizer_list = regularizer_list
+        self._gcca_work_dtype = (
+            "float64" if keras.backend.backend() == "tensorflow" else keras.backend.floatx()
+        )
+        if not (0.0 <= self.momentum < 1.0):
+            raise ValueError("momentum must lie in the interval [0, 1).")
 
         if not run_from_config:
             if self.is_siamese:
@@ -374,8 +382,64 @@ class DGCCA(keras.Model):
 
         self.loss_tracker_total = keras.metrics.Mean(name="total_loss")
         self.corr_tracker = keras.metrics.Mean(name="cross_metric")
-        self.loss_tracker_recon = keras.metrics.Mean(name="reconstruction_loss")
+        self.loss_tracker_gcca = keras.metrics.Mean(name="gcca_loss")
         self.loss_tracker_redundancy = keras.metrics.Mean(name="redundancy")
+
+        self._moving_covariances = []
+        self._moving_covariances_ready = []
+        self._stored_u_matrices = []
+        self._stored_view_means = []
+        for view_index in range(len(self.model_list)):
+            self._moving_covariances.append(
+                self.add_weight(
+                    name=f"dgcca_moving_covariance_{view_index}",
+                    shape=(self.ndims, self.ndims),
+                    initializer="zeros",
+                    dtype=self._gcca_work_dtype,
+                    trainable=False,
+                )
+            )
+            self._stored_u_matrices.append(
+                self.add_weight(
+                    name=f"dgcca_stored_u_{view_index}",
+                    shape=(self.ndims, self.ndims),
+                    initializer="zeros",
+                    dtype=self._gcca_work_dtype,
+                    trainable=False,
+                )
+            )
+            self._stored_view_means.append(
+                self.add_weight(
+                    name=f"dgcca_stored_mean_{view_index}",
+                    shape=(self.ndims,),
+                    initializer="zeros",
+                    dtype=self._gcca_work_dtype,
+                    trainable=False,
+                )
+            )
+            self._moving_covariances_ready.append(
+                self.add_weight(
+                    name=f"dgcca_moving_covariance_ready_{view_index}",
+                    shape=(),
+                    initializer="zeros",
+                    dtype="float32",
+                    trainable=False,
+                )
+            )
+        self._stored_projection_steps = self.add_weight(
+            name="dgcca_stored_projection_steps",
+            shape=(),
+            initializer="zeros",
+            dtype="float32",
+            trainable=False,
+        )
+        self._stored_projection_ready = self.add_weight(
+            name="dgcca_stored_projection_ready",
+            shape=(),
+            initializer="zeros",
+            dtype="float32",
+            trainable=False,
+        )
 
     def _add_projection(self, model, regularizer):
         if isinstance(model, keras.Sequential):
@@ -428,7 +492,7 @@ class DGCCA(keras.Model):
         return [
             self.loss_tracker_total,
             self.corr_tracker,
-            self.loss_tracker_recon,
+            self.loss_tracker_gcca,
             self.loss_tracker_redundancy,
         ]
 
@@ -447,14 +511,29 @@ class DGCCA(keras.Model):
     def _ones_scalar(self, dtype):
         return ops.convert_to_tensor(1.0, dtype=dtype)
 
+    def _stop_grad(self, x):
+        backend = keras.backend.backend()
+        if backend == "tensorflow":
+            return tf.stop_gradient(x)
+        if backend == "torch":
+            return self._torch_value(x).detach()
+        raise NotImplementedError(f"Backend '{backend}' not supported for stop_gradient.")
+
     def _center_view(self, z):
         if not self.center_outputs:
             return z
         return z - ops.mean(z, axis=0, keepdims=True)
 
+    def _center_view_and_mean(self, z):
+        if not self.center_outputs:
+            return z, ops.zeros((self.ndims,), dtype=ops.dtype(z))
+        view_mean = ops.mean(z, axis=0)
+        z_centered = z - ops.expand_dims(view_mean, axis=0)
+        return z_centered, view_mean
+
     def _gcca_cast(self, tensor):
-        # Use float64 for the GCCA linear algebra to reduce eigen / inverse noise.
-        return ops.cast(tensor, "float64")
+        # TensorFlow can use float64 for GCCA algebra; torch/MPS needs float32.
+        return ops.cast(tensor, self._gcca_work_dtype)
 
     def _symmetrize(self, matrix):
         return 0.5 * (matrix + ops.transpose(matrix))
@@ -468,15 +547,69 @@ class DGCCA(keras.Model):
         eigvecs_scaled = eigvecs * ops.expand_dims(inv_vals, axis=0)
         return ops.matmul(eigvecs_scaled, ops.transpose(eigvecs))
 
-    def _gcca_projection_matrix(self, z_centered):
-        y = ops.transpose(z_centered)  # (d, B)
-        dtype = ops.dtype(y)
+    def _feature_covariance(self, y):
         cov = ops.matmul(y, ops.transpose(y))
-        cov = self._symmetrize(cov)
-        cov = cov + ops.cast(self.gcca_reg, dtype) * ops.eye(self.ndims, dtype=dtype)
-        cov_inv = self._sym_inverse_psd(cov)
+        return self._symmetrize(cov)
+
+    def _moving_covariance(self, view_index, batch_covariance, training):
+        batch_covariance = self._symmetrize(self._gcca_cast(batch_covariance))
+        batch_covariance_frozen = self._stop_grad(batch_covariance)
+
+        moving_covariance = self._moving_covariances[view_index]
+        ready_state = ops.cast(
+            self._moving_covariances_ready[view_index],
+            dtype=ops.dtype(batch_covariance),
+        )
+
+        if training:
+            if self.momentum == 0.0:
+                self._moving_covariances[view_index].assign(batch_covariance_frozen)
+                self._moving_covariances_ready[view_index].assign(
+                    ops.cast(1.0, self._moving_covariances_ready[view_index].dtype)
+                )
+                return batch_covariance
+
+            momentum_value = ops.cast(self.momentum, dtype=ops.dtype(batch_covariance))
+            one = ops.cast(1.0, dtype=ops.dtype(batch_covariance))
+            updated_covariance = (
+                ready_state
+                * (
+                    momentum_value * moving_covariance
+                    + (one - momentum_value) * batch_covariance_frozen
+                )
+                + (one - ready_state) * batch_covariance_frozen
+            )
+            self._moving_covariances[view_index].assign(updated_covariance)
+            self._moving_covariances_ready[view_index].assign(
+                ops.cast(1.0, self._moving_covariances_ready[view_index].dtype)
+            )
+            return updated_covariance
+
+        return (
+            ready_state * moving_covariance
+            + (ops.cast(1.0, dtype=ops.dtype(batch_covariance)) - ready_state) * batch_covariance_frozen
+        )
+
+    def _gcca_projection_matrix(self, y, covariance):
+        dtype = ops.dtype(y)
+        covariance = self._symmetrize(covariance)
+        covariance = covariance + ops.cast(self.gcca_reg, dtype) * ops.eye(self.ndims, dtype=dtype)
+        covariance = self._symmetrize(covariance)
+        covariance = covariance + ops.cast(self.eps, dtype) * ops.eye(self.ndims, dtype=dtype)
+        cov_inv = self._sym_inverse_psd(covariance)
         proj = ops.matmul(ops.transpose(y), ops.matmul(cov_inv, y))  # (B, B)
-        return self._symmetrize(proj), y, cov_inv
+        return self._symmetrize(proj), cov_inv
+
+    def _view_projection_terms(self, z_centered, view_index, training):
+        y = ops.transpose(z_centered)  # (d, B)
+        batch_covariance = self._feature_covariance(y)
+        covariance = self._moving_covariance(
+            view_index=view_index,
+            batch_covariance=batch_covariance,
+            training=training,
+        )
+        proj, cov_inv = self._gcca_projection_matrix(y, covariance)
+        return proj, y, cov_inv
 
     def _corr_pair(self, a, b):
         eps = ops.convert_to_tensor(self.eps, dtype=ops.dtype(a))
@@ -541,16 +674,16 @@ class DGCCA(keras.Model):
 
         return correlation_matrices
 
-    def _cross_metric_ops(self, Z):
-        dtype = ops.dtype(Z)
+    def _pairwise_cross_metric(self, view_embeddings):
+        dtype = ops.dtype(view_embeddings[0])
         total = self._zeros_scalar(dtype)
         count = self._zeros_scalar(dtype)
-        M = len(self.model_list)
+        M = len(view_embeddings)
 
         for i in range(M):
-            z_i = self._center_view(Z[:, :, i])
+            z_i = self._center_view(view_embeddings[i])
             for j in range(i + 1, M):
-                z_j = self._center_view(Z[:, :, j])
+                z_j = self._center_view(view_embeddings[j])
                 total = total + self._corr_pair(z_i, z_j)
                 count = count + self._ones_scalar(dtype)
 
@@ -562,17 +695,21 @@ class DGCCA(keras.Model):
             total = total + self.calculate_redundancy(self._center_view(Z[:, :, v]))
         return total / float(len(self.model_list))
 
-    def _dgcca_reconstruction_loss(self, Z):
-        input_dtype = ops.dtype(Z)
+    def _dgcca_batch_terms(self, Z, training):
         M = len(self.model_list)
 
         projection_sum = None
         y_views = []
         cov_inv_views = []
-
+        view_means = []
         for v in range(M):
-            z_centered = self._gcca_cast(self._center_view(Z[:, :, v]))
-            proj_v, y_v, cov_inv_v = self._gcca_projection_matrix(z_centered)
+            z_raw = self._gcca_cast(Z[:, :, v])
+            z_centered, view_mean = self._center_view_and_mean(z_raw)
+            proj_v, y_v, cov_inv_v = self._view_projection_terms(
+                z_centered=z_centered,
+                view_index=v,
+                training=training,
+            )
 
             if projection_sum is None:
                 projection_sum = proj_v
@@ -581,20 +718,91 @@ class DGCCA(keras.Model):
 
             y_views.append(y_v)
             cov_inv_views.append(cov_inv_v)
+            view_means.append(view_mean)
 
         projection_sum = self._symmetrize(projection_sum)
-        _, eigvecs = ops.linalg.eigh(projection_sum)
-        top_vecs = ops.flip(eigvecs, axis=1)[:, : self.ndims]  # (B, r_eff)
-        G = ops.transpose(top_vecs)  # (r_eff, B), rows orthonormal
+        eigenvalues, eigenvectors = ops.linalg.eigh(projection_sum)
+        top_eigenvalues = ops.flip(eigenvalues, axis=0)[: self.ndims]
+        top_eigenvectors = ops.flip(eigenvectors, axis=1)[:, : self.ndims]
+        G = ops.transpose(top_eigenvectors)  # (r_eff, B)
 
-        reconstruction_total = self._zeros_scalar(ops.dtype(G))
+        shared_view_estimates = []
+        u_views = []
         for y_v, cov_inv_v in zip(y_views, cov_inv_views):
             u_v = ops.matmul(cov_inv_v, ops.matmul(y_v, ops.transpose(G)))  # (d, r_eff)
-            recon_v = ops.matmul(ops.transpose(u_v), y_v)  # (r_eff, B)
-            reconstruction_total = reconstruction_total + ops.mean(ops.square(G - recon_v))
+            u_views.append(u_v)
+            shared_v = ops.matmul(ops.transpose(u_v), y_v)  # (r_eff, B)
+            shared_view_estimates.append(ops.transpose(shared_v))  # (B, r_eff)
 
-        reconstruction_loss = reconstruction_total / float(M)
-        return ops.cast(reconstruction_loss, input_dtype)
+        return top_eigenvalues, shared_view_estimates, u_views, view_means
+
+    def _update_stored_projection_statistics(self, u_views, view_means):
+        next_step = self._stored_projection_steps + ops.cast(
+            1.0, self._stored_projection_steps.dtype
+        )
+        step_dtype = self._gcca_work_dtype
+        next_step_cast = ops.cast(next_step, step_dtype)
+
+        for view_index, (u_view, view_mean) in enumerate(zip(u_views, view_means)):
+            u_frozen = self._stop_grad(self._gcca_cast(u_view))
+            mean_frozen = self._stop_grad(self._gcca_cast(view_mean))
+
+            updated_u = self._stored_u_matrices[view_index] + (
+                u_frozen - self._stored_u_matrices[view_index]
+            ) / next_step_cast
+            updated_mean = self._stored_view_means[view_index] + (
+                mean_frozen - self._stored_view_means[view_index]
+            ) / next_step_cast
+
+            self._stored_u_matrices[view_index].assign(updated_u)
+            self._stored_view_means[view_index].assign(updated_mean)
+
+        self._stored_projection_steps.assign(next_step)
+        self._stored_projection_ready.assign(
+            ops.cast(1.0, self._stored_projection_ready.dtype)
+        )
+
+    def _stored_shared_view_estimates(self, Z):
+        shared_view_estimates = []
+        for view_index in range(len(self.model_list)):
+            z_raw = self._gcca_cast(Z[:, :, view_index])
+            if self.center_outputs:
+                z_centered = z_raw - ops.expand_dims(
+                    self._stored_view_means[view_index], axis=0
+                )
+            else:
+                z_centered = z_raw
+
+            y = ops.transpose(z_centered)
+            u_view = self._stored_u_matrices[view_index]
+            shared_v = ops.matmul(ops.transpose(u_view), y)
+            shared_view_estimates.append(ops.transpose(shared_v))
+        return shared_view_estimates
+
+    def _shared_outputs_from_latents(self, Z):
+        _, batch_shared_view_estimates, _, _ = self._dgcca_batch_terms(
+            Z, training=False
+        )
+        batch_shared_outputs = ops.stack(batch_shared_view_estimates, axis=-1)
+
+        stored_shared_view_estimates = self._stored_shared_view_estimates(Z)
+        stored_shared_outputs = ops.stack(stored_shared_view_estimates, axis=-1)
+
+        ready = ops.cast(self._stored_projection_ready, ops.dtype(batch_shared_outputs))
+        one = ops.cast(1.0, ops.dtype(batch_shared_outputs))
+        return ready * stored_shared_outputs + (one - ready) * batch_shared_outputs
+
+    def _dgcca_objective_loss(self, top_eigenvalues, num_views, input_dtype):
+        work_dtype = ops.dtype(top_eigenvalues)
+        rank_used = ops.cast(self._shape_fn(top_eigenvalues)[0], work_dtype)
+        num_views_tensor = ops.cast(float(num_views), work_dtype)
+
+        # The paper minimizes the GCCA reconstruction objective at the optimum.
+        # For the MAXVAR GCCA problem this is equivalent to minimizing
+        # M * r - sum(top eigenvalues), where M is the number of views and r is
+        # the retained shared rank.
+        gcca_loss = num_views_tensor * rank_used - ops.sum(top_eigenvalues)
+        return ops.cast(gcca_loss, input_dtype)
 
     def _regularization_loss(self, ref_tensor):
         dtype = ops.dtype(ref_tensor)
@@ -627,12 +835,40 @@ class DGCCA(keras.Model):
 
     def _compute_losses(self, inputs, training):
         Z = self(inputs, training=training)
-        reconstruction_loss = self._dgcca_reconstruction_loss(Z)
-        reg = self._regularization_loss(reconstruction_loss)
-        total_loss = reconstruction_loss + reg
-        cross_metric = self._cross_metric_ops(Z)
+        top_eigenvalues, shared_view_estimates, u_views, view_means = self._dgcca_batch_terms(
+            Z, training=training
+        )
+        gcca_loss = self._dgcca_objective_loss(
+            top_eigenvalues=top_eigenvalues,
+            num_views=len(self.model_list),
+            input_dtype=ops.dtype(Z),
+        )
+        reg = self._regularization_loss(gcca_loss)
+        total_loss = gcca_loss + reg
+        if training:
+            self._update_stored_projection_statistics(u_views, view_means)
+            cross_metric = self._pairwise_cross_metric(shared_view_estimates)
+        else:
+            batch_cross_metric = self._pairwise_cross_metric(shared_view_estimates)
+            stored_shared_view_estimates = self._stored_shared_view_estimates(Z)
+            stored_cross_metric = self._pairwise_cross_metric(stored_shared_view_estimates)
+            ready = ops.cast(self._stored_projection_ready, ops.dtype(batch_cross_metric))
+            one = ops.cast(1.0, ops.dtype(batch_cross_metric))
+            cross_metric = ready * stored_cross_metric + (one - ready) * batch_cross_metric
         redundancy = self._redundancy_ops(Z)
-        return total_loss, reconstruction_loss, cross_metric, redundancy
+        return total_loss, gcca_loss, cross_metric, redundancy
+
+    def predict_shared(self, inputs, batch_size=None, verbose=0):
+        return super().predict(inputs, batch_size=batch_size, verbose=verbose)
+
+    def predict_step(self, data):
+        if isinstance(data, tuple):
+            inputs = data[0]
+        else:
+            inputs = data
+
+        raw_outputs = self(inputs, training=False)
+        return self._shared_outputs_from_latents(raw_outputs)
 
     def compile(self, optimizer):
         super().compile()
@@ -655,7 +891,7 @@ class DGCCA(keras.Model):
 
         if backend == "tensorflow":
             with tf.GradientTape() as tape:
-                total_loss, reconstruction_loss, cross_metric, redundancy = self._compute_losses(
+                total_loss, gcca_loss, cross_metric, redundancy = self._compute_losses(
                     inputs, training=True
                 )
 
@@ -678,7 +914,7 @@ class DGCCA(keras.Model):
                 idx += n_vars
 
         elif backend == "torch":
-            total_loss, reconstruction_loss, cross_metric, redundancy = self._compute_losses(
+            total_loss, gcca_loss, cross_metric, redundancy = self._compute_losses(
                 inputs, training=True
             )
 
@@ -712,32 +948,32 @@ class DGCCA(keras.Model):
             raise NotImplementedError(f"Backend '{backend}' not supported in DGCCA train_step.")
 
         self.loss_tracker_total.update_state(total_loss)
-        self.loss_tracker_recon.update_state(reconstruction_loss)
+        self.loss_tracker_gcca.update_state(gcca_loss)
         self.corr_tracker.update_state(cross_metric)
         self.loss_tracker_redundancy.update_state(redundancy)
 
         return {
             "total_loss": self.loss_tracker_total.result(),
             "cross_metric": self.corr_tracker.result(),
-            "reconstruction_loss": self.loss_tracker_recon.result(),
+            "gcca_loss": self.loss_tracker_gcca.result(),
             "redundancy": self.loss_tracker_redundancy.result(),
         }
 
     def test_step(self, inputs):
         inputs = inputs[0]
-        total_loss, reconstruction_loss, cross_metric, redundancy = self._compute_losses(
+        total_loss, gcca_loss, cross_metric, redundancy = self._compute_losses(
             inputs, training=False
         )
 
         self.loss_tracker_total.update_state(total_loss)
-        self.loss_tracker_recon.update_state(reconstruction_loss)
+        self.loss_tracker_gcca.update_state(gcca_loss)
         self.corr_tracker.update_state(cross_metric)
         self.loss_tracker_redundancy.update_state(redundancy)
 
         return {
             "total_loss": self.loss_tracker_total.result(),
             "cross_metric": self.corr_tracker.result(),
-            "reconstruction_loss": self.loss_tracker_recon.result(),
+            "gcca_loss": self.loss_tracker_gcca.result(),
             "redundancy": self.loss_tracker_redundancy.result(),
         }
 
@@ -752,6 +988,7 @@ class DGCCA(keras.Model):
             "regularizer_list": serialized_regularizers,
             "ndims": self.ndims,
             "gcca_reg": self.gcca_reg,
+            "momentum": self.momentum,
             "eps": self.eps,
             "center_outputs": self.center_outputs,
             "is_siamese": self.is_siamese,
@@ -760,7 +997,6 @@ class DGCCA(keras.Model):
     @classmethod
     def from_config(cls, config):
         config.pop("Path", None)
-        config.pop("matrix_momentum", None)
         config["model_list"] = [keras.utils.deserialize_keras_object(mc) for mc in config["model_list"]]
         if "regularizer_list" in config:
             config["regularizer_list"] = [keras.utils.deserialize_keras_object(rc) for rc in config["regularizer_list"]]
@@ -1172,9 +1408,10 @@ class LeJEPA(keras.Model):
 
     This implementation:
         total_loss = (1 - lambda) * prediction_loss + lambda * SIGReg
-    where the prediction loss pulls each view toward the mean embedding of all
-    other data views, and SIGReg encourages each view's embeddings to follow an
-    isotropic Gaussian distribution.
+    where the first `V_g` views are treated as global views and every view is
+    pulled toward the mean embedding of those global views. If `V_g` is not
+    specified, all views are treated as global (`V_l = 0`). SIGReg encourages
+    each view's embeddings to follow an isotropic Gaussian distribution.
     """
 
     def __init__(
@@ -1183,6 +1420,7 @@ class LeJEPA(keras.Model):
         regularizer_list,
         ndims,
         lambda_weight: float = 0.05,
+        num_global_views=None,
         num_slices: int = 256,
         integration_min: float = -5.0,
         integration_max: float = 5.0,
@@ -1196,6 +1434,7 @@ class LeJEPA(keras.Model):
 
         self.ndims = int(ndims)
         self.lambda_weight = float(lambda_weight)
+        self.num_global_views = None
         self.num_slices = int(num_slices)
         self.integration_min = float(integration_min)
         self.integration_max = float(integration_max)
@@ -1215,6 +1454,8 @@ class LeJEPA(keras.Model):
                 ]
         else:
             self.model_list = model_list
+
+        self.num_global_views = self._resolve_num_global_views(num_global_views)
 
         # Trackers aligned with VICReg-style reporting.
         self.loss_tracker_total = keras.metrics.Mean(name="total_loss")
@@ -1293,6 +1534,18 @@ class LeJEPA(keras.Model):
 
     def _zeros_scalar(self, dtype):
         return ops.convert_to_tensor(0.0, dtype=dtype)
+
+    def _resolve_num_global_views(self, num_global_views):
+        num_views = len(self.model_list)
+        if num_global_views is None:
+            return num_views
+
+        num_global_views = int(num_global_views)
+        if num_global_views < 1 or num_global_views > num_views:
+            raise ValueError(
+                f"num_global_views must lie in [1, {num_views}] for a model with {num_views} views."
+            )
+        return num_global_views
 
     def _sample_slices(self, ref_tensor):
         dtype = getattr(ref_tensor, "dtype", None)
@@ -1388,18 +1641,12 @@ class LeJEPA(keras.Model):
             total = total + self._sigreg_view(Z[:, :, v], A, t)
         return total / float(len(self.model_list))
 
-    def _mean_other_views(self, Z, view_index):
-        num_other_views = len(self.model_list) - 1
-        if num_other_views <= 0:
-            return Z[:, :, view_index]
-
+    def _global_center(self, Z):
         center = None
-        for other_index in range(len(self.model_list)):
-            if other_index == view_index:
-                continue
-            z_other = Z[:, :, other_index]
-            center = z_other if center is None else center + z_other
-        return center / float(num_other_views)
+        for global_index in range(self.num_global_views):
+            z_global = Z[:, :, global_index]
+            center = z_global if center is None else center + z_global
+        return center / float(self.num_global_views)
 
     def _prediction_loss_ops(self, Z):
         dtype = ops.dtype(Z)
@@ -1407,10 +1654,10 @@ class LeJEPA(keras.Model):
         if M <= 1:
             return self._zeros_scalar(dtype)
 
+        center = self._global_center(Z)
         total = self._zeros_scalar(dtype)
         for v in range(M):
-            center_v = self._mean_other_views(Z, v)
-            total = total + ops.mean(ops.square(center_v - Z[:, :, v]))
+            total = total + ops.mean(ops.square(center - Z[:, :, v]))
         return total / float(M)
 
     def _corr_pair(self, a, b):
@@ -1454,15 +1701,11 @@ class LeJEPA(keras.Model):
         if M <= 1:
             return self._zeros_scalar(dtype)
 
+        center = self._global_center(Z)
         total = self._zeros_scalar(dtype)
-        count = self._zeros_scalar(dtype)
-        for i in range(M):
-            for j in range(M):
-                if i == j:
-                    continue
-                total = total + self._corr_pair(Z[:, :, i], Z[:, :, j])
-                count = count + self._ones_scalar(dtype)
-        return total / ops.maximum(count, self._ones_scalar(dtype))
+        for v in range(M):
+            total = total + self._corr_pair(center, Z[:, :, v])
+        return total / float(M)
 
     def _redundancy_ops(self, Z):
         total = self._zeros_scalar(ops.dtype(Z))
@@ -1631,6 +1874,7 @@ class LeJEPA(keras.Model):
             "regularizer_list": serialized_regularizers,
             "ndims": self.ndims,
             "lambda_weight": self.lambda_weight,
+            "num_global_views": self.num_global_views,
             "num_slices": self.num_slices,
             "integration_min": self.integration_min,
             "integration_max": self.integration_max,
@@ -1642,8 +1886,10 @@ class LeJEPA(keras.Model):
     @classmethod
     def from_config(cls, config):
         config.pop("Path", None)
-        config.pop("global_view_indices", None)
+        legacy_global_view_indices = config.pop("global_view_indices", None)
         config.pop("use_path_centers", None)
+        if "num_global_views" not in config and legacy_global_view_indices is not None:
+            config["num_global_views"] = len(legacy_global_view_indices)
         config["model_list"] = [keras.utils.deserialize_keras_object(mc) for mc in config["model_list"]]
         if "regularizer_list" in config:
             config["regularizer_list"] = [keras.utils.deserialize_keras_object(rc) for rc in config["regularizer_list"]]

@@ -13,7 +13,7 @@ from importlib import resources
 # import keras_tuner as kt  # temporarily disabled
 
 import deep_lvpm 
-from deep_lvpm.multi_model import DGCCA
+from deep_lvpm.model import StructuralModel
 # from deep_lvpm.tuner import Tuner  # temporarily disabled
 
 tf.config.run_functions_eagerly(False)   # default graph mode for final training
@@ -79,13 +79,24 @@ view_models = [
 ]
 
 
-ndims = 1 # number of latent factors
+ndims = 5 # number of latent factors
+
+Path = np.array(
+    [
+        [0, 1, 0, 0, 0],
+        [1, 0, 1, 1, 1],
+        [0, 1, 0, 0, 0],
+        [0, 1, 0, 0, 0],
+        [0, 1, 0, 0, 0],
+    ],
+    dtype="float32",
+)
 
 batch_size  = 256
 epochs      = 300
 total_steps = int(rnaseq.shape[0] / batch_size) * epochs
 
-init_lr, final_lr = 1e-6, 1e-7
+init_lr, final_lr = 1e-2, 1e-3
 
 lr_schedule = optimizers.schedules.ExponentialDecay(
     initial_learning_rate=init_lr,
@@ -96,22 +107,28 @@ lr_schedule = optimizers.schedules.ExponentialDecay(
 
 tot_num = rnaseq.shape[0]
 
-dgcca_kwargs = dict(
-    ndims=ndims,
-    regularizer_list=[None] * len(view_models),
-    gcca_reg=1e-3,
-    is_siamese=False,
-)
+regularizer_list = [
+    regularizers.L1L2(l1=0.001, l2=0.001)
+    for _ in range(len(view_models))
+]
 
-# Build DGCCA directly and train.
+# Build DLVPM directly and train with ZCA orthogonalization.
 opt_list = [keras.optimizers.Adam(learning_rate=lr_schedule) for _ in range(len(view_models))]
 
-best_model = DGCCA(
+best_model = StructuralModel(
+    Path=Path,
     model_list=view_models,
-    **dgcca_kwargs,
+    regularizer_list=regularizer_list,
+    tot_num=tot_num,
+    ndims=ndims,
+    momentum=0.95,
+    epsilon=0.001,
+    orthogonalization="zca",
+    train_DLV=True,
+    order=True,
 )
 
-best_model.compile(opt_list)
+best_model.compile(optimizer=opt_list)
 
 
 # --- Rotation verification: internal vs post-hoc ---
@@ -172,23 +189,15 @@ best_model.fit(X_full, batch_size=batch_size, epochs=epochs, verbose=True)
 opt_list = [keras.optimizers.Adam(learning_rate=1e-5) for _ in range(len(view_models))]
 best_model.compile(opt_list)
 best_model.fit(X_full, batch_size=batch_size, epochs=50, verbose=True)
-_rot_metrics = check_internal_vs_posthoc_rotation(best_model, X_full, batch_size=batch_size, label="fit-data")
 
 
-# best_model.fit(X_full, batch_size=batch_size, epochs=5, verbose=True)
+train_metrics = best_model.evaluate(X_train, verbose=False, return_dict=True)
+val_metrics = best_model.evaluate(X_val, verbose=False, return_dict=True)
 
-
-# Run the check on the same data used for fit (X_full)
-
-
-
-train_corr = best_model.evaluate(X_train, verbose=False)
-val_corr = best_model.evaluate(X_val, verbose=False)
-
-print('Training mean correlation r=' + str(train_corr[1]))
-print('Validation mean correlation r=' + str(val_corr[1]))
-
-# tf.print(tf.math.count_nonzero(DLVPM_Structural_instance.model_list[1].layers[-1].project==0))
+print('Training total loss=' + str(train_metrics["total_loss"]))
+print('Validation total loss=' + str(val_metrics["total_loss"]))
+print('Training mean correlation r=' + str(train_metrics["cross_metric"]))
+print('Validation mean correlation r=' + str(val_metrics["cross_metric"]))
 
 with resources.as_file(resources.files("deep_lvpm.data") /
                        "Lung_multiomics_sample_test.npz") as f:
@@ -203,19 +212,16 @@ X_arr_test = [histo20_test, rnaseq_test, methylation_test, mirna_test, snv_test]
 
 
 train_DLVs = best_model.predict(X_train)
-# train_DLVs = best_model.order_variates(train_DLVs)
 
 corr_mat = best_model.calculate_corrmat(train_DLVs) # This outputs correlation matrices between different data types included in the model
 
-corrmean = [np.mean(a) for a in corr_mat]
 
-print(corrmean)
+test_metrics = best_model.evaluate(X_arr_test, return_dict=True)
 
-mean_corr_test = best_model.evaluate(X_arr_test)
-
-print('The mean correlation across data types is r=' + str(mean_corr_test[1]))
+print('Test total loss=' + str(test_metrics["total_loss"]))
 
 test_DLVs = best_model.predict(X_arr_test) ## Here, we obtain the full set of test_DLVs
+print('The mean correlation across data types is r=' + str(test_metrics["cross_metric"]))
 
 ## Associations between the first set of DLVs are:
 print(np.corrcoef(test_DLVs[:,0,:].T))

@@ -8,7 +8,7 @@ from keras import layers
 from deep_lvpm.layers.ConfoundLayer import ConfoundLayer
 from deep_lvpm.layers.FactorLayer import FactorLayer
 from deep_lvpm.model import StructuralModel
-from deep_lvpm.multi_model import LeJEPA, VICReg
+from deep_lvpm.multi_model import DGCCA, LeJEPA, VICReg
 from deep_lvpm.tutorial.tcga_quickstart import (
     _evaluate_structural_model,
     run_tcga_quickstart,
@@ -70,6 +70,29 @@ def _to_metric_floats(metrics):
     }
 
 
+def _make_identity_encoder(width):
+    """Create an identity encoder so internal loss formulas can be tested exactly."""
+    inputs = keras.Input(shape=(width,))
+    return keras.Model(inputs, inputs)
+
+
+def _manual_global_center_prediction_loss(views, num_global_views):
+    """Reference LeJEPA prediction loss using the mean of the global views."""
+    center = np.mean(np.stack(views[:num_global_views], axis=0), axis=0)
+    per_view_losses = [np.mean((center - view) ** 2) for view in views]
+    return float(np.mean(per_view_losses))
+
+
+def _manual_leave_one_out_prediction_loss(views):
+    """Reference for the old leave-one-out implementation kept for comparison tests."""
+    per_view_losses = []
+    for view_index, view in enumerate(views):
+        other_views = [other for other_index, other in enumerate(views) if other_index != view_index]
+        center = np.mean(np.stack(other_views, axis=0), axis=0)
+        per_view_losses.append(np.mean((center - view) ** 2))
+    return float(np.mean(per_view_losses))
+
+
 def test_vicreg_trains_across_all_views_without_path_matrix():
     """VICReg should train using all view pairs without requiring a path matrix."""
     keras.utils.set_random_seed(123)
@@ -91,8 +114,112 @@ def test_vicreg_trains_across_all_views_without_path_matrix():
     assert "Path" not in model.get_config()
 
 
-def test_lejepa_trains_across_all_views_without_path_matrix():
-    """LeJEPA should use the mean of the other views and not depend on path inputs."""
+def test_dgcca_uses_optional_moving_covariance_statistics():
+    """DGCCA should store both covariance and projection statistics for clean test-time projection."""
+    keras.utils.set_random_seed(321)
+    rng = np.random.default_rng(321)
+    model = DGCCA(
+        model_list=[_make_encoder(4), _make_encoder(4), _make_encoder(4)],
+        regularizer_list=[None, None, None],
+        ndims=3,
+        gcca_reg=1e-2,
+        momentum=0.5,
+    )
+    model.compile(
+        [keras.optimizers.Adam(learning_rate=1e-3) for _ in model.model_list]
+    )
+
+    batch = tuple(rng.normal(size=(8, 4)).astype("float32") for _ in range(3))
+    metrics = _to_metric_floats(model.train_step((batch,)))
+
+    assert set(metrics) == {
+        "total_loss",
+        "cross_metric",
+        "gcca_loss",
+        "redundancy",
+    }
+    assert all(np.isfinite(value) for value in metrics.values())
+
+    moving_covariances_after_train = [
+        np.asarray(keras.ops.convert_to_numpy(weight))
+        for weight in model._moving_covariances
+    ]
+    stored_u_after_train = [
+        np.asarray(keras.ops.convert_to_numpy(weight))
+        for weight in model._stored_u_matrices
+    ]
+    stored_means_after_train = [
+        np.asarray(keras.ops.convert_to_numpy(weight))
+        for weight in model._stored_view_means
+    ]
+    ready_flags = [
+        float(keras.ops.convert_to_numpy(flag))
+        for flag in model._moving_covariances_ready
+    ]
+    stored_ready = float(keras.ops.convert_to_numpy(model._stored_projection_ready))
+    stored_steps = float(keras.ops.convert_to_numpy(model._stored_projection_steps))
+
+    assert all(flag == pytest.approx(1.0, abs=1e-6) for flag in ready_flags)
+    assert any(np.any(np.abs(covariance) > 0.0) for covariance in moving_covariances_after_train)
+    assert stored_ready == pytest.approx(1.0, abs=1e-6)
+    assert stored_steps == pytest.approx(1.0, abs=1e-6)
+    assert any(np.any(np.abs(u_matrix) > 0.0) for u_matrix in stored_u_after_train)
+    assert any(np.any(np.abs(view_mean) > 0.0) for view_mean in stored_means_after_train)
+
+    shared_outputs = model.predict(batch, verbose=0)
+    assert shared_outputs.shape == (8, 3, 3)
+    assert np.all(np.isfinite(shared_outputs))
+
+    shared_outputs_alias = model.predict_shared(batch, verbose=0)
+    np.testing.assert_allclose(shared_outputs, shared_outputs_alias, atol=1e-6, rtol=1e-6)
+
+    test_metrics = _to_metric_floats(model.test_step((batch,)))
+    moving_covariances_after_test = [
+        np.asarray(keras.ops.convert_to_numpy(weight))
+        for weight in model._moving_covariances
+    ]
+
+    assert set(test_metrics) == {
+        "total_loss",
+        "cross_metric",
+        "gcca_loss",
+        "redundancy",
+    }
+    for before, after in zip(moving_covariances_after_train, moving_covariances_after_test):
+        np.testing.assert_allclose(before, after, atol=1e-8, rtol=1e-8)
+
+    config = model.get_config()
+    assert config["momentum"] == pytest.approx(0.5, rel=1e-6)
+
+
+def test_lejepa_prediction_uses_global_view_center():
+    """LeJEPA should pull all views toward the mean embedding of the first V_g global views."""
+    views = [
+        np.array([[2.0, -1.0], [1.5, 0.5]], dtype="float32"),
+        np.array([[0.0, 3.0], [-2.0, 4.0]], dtype="float32"),
+        np.array([[5.0, 1.0], [0.5, -3.0]], dtype="float32"),
+    ]
+    model = LeJEPA(
+        model_list=[_make_identity_encoder(2) for _ in views],
+        regularizer_list=[None for _ in views],
+        ndims=2,
+        num_global_views=1,
+        num_slices=8,
+        integration_points=5,
+        run_from_config=True,
+    )
+
+    stacked = model(tuple(views), training=False)
+    pred_loss = float(keras.ops.convert_to_numpy(model._prediction_loss_ops(stacked)))
+    expected_global_center = _manual_global_center_prediction_loss(views, num_global_views=1)
+    expected_leave_one_out = _manual_leave_one_out_prediction_loss(views)
+
+    assert pred_loss == pytest.approx(expected_global_center, rel=1e-6, abs=1e-6)
+    assert pred_loss != pytest.approx(expected_leave_one_out, rel=1e-3, abs=1e-3)
+
+
+def test_lejepa_trains_using_global_views_without_path_matrix():
+    """LeJEPA should default to treating all views as global when V_g is not specified."""
     keras.utils.set_random_seed(456)
     rng = np.random.default_rng(456)
     model = LeJEPA(
@@ -119,7 +246,7 @@ def test_lejepa_trains_across_all_views_without_path_matrix():
     }
     assert all(np.isfinite(value) for value in metrics.values())
     assert "Path" not in config
-    assert "global_view_indices" not in config
+    assert config["num_global_views"] == len(model.model_list)
     assert "use_path_centers" not in config
 
 

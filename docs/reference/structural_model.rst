@@ -1,12 +1,23 @@
 StructuralModel
 ===============
 
-The :class:`deep_lvpm.model.StructuralModel` class is the core of the DLVPM toolbox.  It inherits from ``keras.Model`` (Keras 3, multi-backend) and coordinates multiple sub-models, termed **measurement models** (one per data view), together with a binary **path model**, which specifies how latent factors are connected across views.  During training, the model learns sets of orthogonal deep latent variables (DLVs) that maximise correlation between the outputs of the measurement models while respecting the path structure.  The implementation runs unchanged on either the TensorFlow or PyTorch backends as long as the appropriate backend is selected when importing Keras.
+The :class:`deep_lvpm.model.StructuralModel` class is the core DLVPM model.
+It subclasses ``keras.Model`` and coordinates one measurement model per data
+view with a structural path matrix that defines which views should share latent
+information.
 
-Parameters
-----------
+During training, each measurement model produces deep latent variables (DLVs).
+``StructuralModel`` appends either a Moore-Penrose ``FactorLayer`` or a
+``ZCALayer`` to each measurement model, normalizes the latent variables, and
+optimizes the views so that connected views agree while each view keeps
+non-redundant latent dimensions.
 
-The constructor has the following signature:
+The implementation uses Keras 3 and supports the TensorFlow and PyTorch
+backends in the custom training loop.
+
+
+Constructor
+-----------
 
 .. code-block:: python
 
@@ -20,86 +31,308 @@ The constructor has the following signature:
        momentum=0.95,
        epsilon=1e-4,
        train_DLV=True,
+       run_from_config=False,
        is_siamese=False,
        diag_offset=1e-3,
        sparse_l1_list=0.0,
-       **kwargs
+       attention_mse=False,
+       attention_gate=0.3,
+       order=False,
+       order_association_cutoff=None,
+       **kwargs,
    )
 
-where:
+Parameters
+~~~~~~~~~~
 
-* **Path** (*array-like*): Binary adjacency matrix defining which latent factors are connected between data views.  
-* **model_list** (*list of keras.Model*): One measurement model per data view. 
-* **regularizer_list** (*list*): List of regulariser objects applied to the final projection layer of each measurement model.  May be ``None`` for no regularisation.
-* **tot_num** (*int*): Total number of samples used in training.  This is used internally for scaling covariance matrices.
-* **ndims** (*int*): Number of orthogonal latent variables (DLVs) to extract.
-* **orthogonalization** (*str, optional*): Method for orthogonalising latent factors.  Either ``"Moore-Penrose"`` (default) or ``"zca"``.  The StructuralModel automatically appends the appropriate projection head for the requested method; no user action is required besides choosing the mode.
-* **momentum** (*float, optional*): Momentum parameter for updating global statistics (default: 0.95).
-* **epsilon** (*float, optional*): Small constant added for numerical stability (default: 1e-4).
-* **train_DLV** (*bool, optional*): If ``True`` (default) the shared latent variables are constructed in training mode using batch parameters in the projection layer (rather than running parameters)
-* **is_siamese** (*bool, optional*): Indicates whether the model is being used in a Siamese configuration where all views share weights (default: ``False``).
-* **diag_offset** (*float, optional*): Additional diagonal jitter applied when using ZCA orthogonalisation to keep covariance matrices well-conditioned.
-* **sparse_l1_list** (*float or list, optional*): Amount of L1 soft-thresholding applied to the final projection weights of each measurement model.  May be a scalar (broadcast to all views) or a list of length equal to ``len(model_list)`` for per-view control. Defaults to ``0.0`` (no sparsity). In Siamese mode, values must be identical across views.
-* **kwargs**: Forwarded to ``keras.Model`` (e.g., ``name`` or ``dtype``).
+``Path``
+    Binary or weighted adjacency matrix describing which views are connected.
+    The usual shape is ``(n_views, n_views)``. A non-zero entry
+    ``Path[i, j]`` means view ``i`` is trained against view ``j``.
+
+``model_list``
+    List of Keras measurement models, one per data view. ``StructuralModel``
+    appends the DLVPM projection layer to these models unless loading from a
+    serialized config.
+
+``regularizer_list``
+    List of Keras regularizers applied to the appended projection layer for
+    each view. Use ``None`` for views without projection-layer regularization.
+
+``tot_num``
+    Total number of training samples. This is used by the appended projection
+    layers when updating global covariance statistics.
+
+``ndims``
+    Number of DLV dimensions to learn per view.
+
+``orthogonalization``
+    Projection method used for the appended DLVPM layer. Supported values are
+    ``"Moore-Penrose"`` and ``"zca"``. Moore-Penrose uses ``FactorLayer``.
+    ZCA uses ``ZCALayer`` and enables the ordering options below.
+
+``momentum``
+    Momentum used when updating moving statistics such as covariance and
+    ordering matrices.
+
+``epsilon``
+    Numerical stability constant used in normalization, covariance, and
+    correlation calculations.
+
+``train_DLV``
+    If ``True``, target DLVs are computed with measurement models in training
+    mode during training. If ``False``, target DLVs are computed in inference
+    mode.
+
+``run_from_config``
+    Internal flag used during deserialization. Users normally leave this at
+    ``False``.
+
+``is_siamese``
+    If ``True``, the first measurement model is wrapped once and reused for all
+    views. This is useful when all views should share weights. In Siamese mode,
+    all ``sparse_l1_list`` values must be identical.
+
+``diag_offset``
+    Diagonal jitter used by ``ZCALayer`` to keep covariance matrices
+    well-conditioned. This only affects ``orthogonalization="zca"``.
+
+``sparse_l1_list``
+    Proximal L1 soft-thresholding strength for the appended projection weights.
+    Use a scalar to apply the same threshold to all views, a list with one
+    value per view, or ``0.0`` for no sparsity.
+
+``attention_mse``
+    If ``True``, reconstruction loss uses attention-weighted MSE instead of
+    the standard masked MSE. Attention weights are based on per-dimension
+    correlations to connected target views.
+
+``attention_gate``
+    Minimum correlation required for a connected target view to contribute to
+    the attention-weighted MSE. Must lie in ``[-1, 1]``.
+
+``order``
+    If ``True``, enables structural ordering for ZCA DLVs. Ordering rotates the
+    learned ZCA basis at the end of training so earlier dimensions capture more
+    structural association. This option is only valid with
+    ``orthogonalization="zca"``.
+
+``order_association_cutoff``
+    Optional cumulative association-mass cutoff used with ordered ZCA. Must lie
+    in ``(0, 1]`` and requires ``order=True`` and
+    ``orthogonalization="zca"``. When set, the model keeps the smallest number
+    of ordered dimensions whose cumulative association strength reaches the
+    cutoff, then rebuilds the appended ZCA layers with the reduced dimension.
+
+``**kwargs``
+    Extra keyword arguments forwarded to ``keras.Model``.
 
 
-Common methods
---------------
+Training API
+------------
 
-Because :class:`StructuralModel` subclasses ``keras.Model`` you can use the standard ``compile``/``fit``/``evaluate``/``predict`` APIs regardless of backend:
-
-``compile(optimizer_list)``
-    Configures the model for training.  Pass either a **list of optimisers** (one per measurement model) or a single optimiser object (useful for Siamese setups where the measurement models share weights).  Example:
-
-    .. code-block:: python
-
-       optimizer_list = [
-           tf.keras.optimizers.Adam(learning_rate=1e-4),
-           tf.keras.optimizers.Adam(learning_rate=1e-3),
-           tf.keras.optimizers.Adam(learning_rate=1e-4),
-       ]
-       struct_model.compile(optimizer_list)
-
-``fit(data, batch_size=None, epochs=1, ...)``
-    Trains the model on a list or generator of data arrays.  The input ``data`` should be a list of arrays, one per view (or a ``tf.data``/``torch.utils.data`` dataset yielding such lists).  Additional arguments (``batch_size``, ``epochs``, callbacks, etc.) behave as in Keras.
-
-``evaluate(data)``
-    Evaluates the model on input data and returns a dictionary with the tracked metrics: ``{"total_loss", "cross_metric", "mse_loss", "redundancy"}``.  Briefly:
-
-    * ``total_loss`` – the overall objective combining masked reconstruction error, regularisation terms, and redundancy penalties for every view.
-    * ``cross_metric`` – the average Pearson correlation between latent factors in views that are connected in ``Path`` (higher is better).
-    * ``mse_loss`` – the mean squared error between each view and its connected partners, masked by the adjacency matrix.
-    * ``redundancy`` – the within-view correlation penalty; low values indicate that latent factors remain orthogonal/non-redundant inside each measurement model.
-
-``predict(data)``
-    Computes the deep latent variables for each view, returning a tensor of shape ``(n_samples, ndims, n_views)``.  To extract the latent variables for an individual view use ``struct_model.model_list[i].predict(data[i])``.
-
-``calculate_corrmat(DLVs)``
-    Calculates correlation matrices for the latent variables produced by ``predict``.  Returns a list of correlation matrices with length ``ndims``.  The redundancy metric reported during training/evaluation is derived from these per-view correlations.
-
-
-Minimal working example
------------------------
-
-The script below shows the minimum wiring required to instantiate and run :class:`StructuralModel`.
-It synthesises two NumPy views, builds tiny measurement models, defines a path matrix, trains the
-model for a few epochs, evaluates, and finally inspects the learned latent variables.
+``StructuralModel`` uses standard Keras entry points, but the loss is built
+into the custom training loop. Compile the model with an optimizer object or a
+list of optimizers.
 
 .. code-block:: python
 
-   """
-   Minimal StructuralModel demo with explanatory comments.
+   struct_model.compile(
+       [
+           keras.optimizers.Adam(learning_rate=1e-3),
+           keras.optimizers.Adam(learning_rate=1e-3),
+       ]
+   )
 
-   Steps covered:
-   1. Build toy numpy arrays for two data views.
-   2. Define simple measurement models (dense networks).
-   3. Specify the structural path matrix linking the views.
-   4. Train/evaluate StructuralModel end to end and inspect the outputs.
-   """
+Use one optimizer per measurement model for ordinary multi-view models. For a
+Siamese model with shared weights, a single optimizer is usually sufficient.
+
+.. code-block:: python
+
+   history = struct_model.fit(
+       [view_a, view_b],
+       batch_size=64,
+       epochs=20,
+   )
+
+   metrics = struct_model.evaluate([view_a, view_b], verbose=False)
+   dlvs = struct_model.predict([view_a, view_b], verbose=False)
+
+``predict`` returns a tensor with shape ``(n_samples, ndims, n_views)``. If
+ordered ZCA dimension pruning is enabled, ``ndims`` may be smaller after
+training and will match the retained ordered dimensions.
+
+
+Tracked Metrics
+---------------
+
+``fit`` and ``evaluate`` report the following metrics:
+
+``total_loss``
+    Mean training objective across views, including reconstruction loss and any
+    projection-layer regularization.
+
+``cross_metric``
+    Mean Pearson correlation between connected views. Higher values indicate
+    stronger agreement between structurally connected DLVs.
+
+``mse_loss``
+    Reconstruction loss between each source view and its connected target
+    views. Missing rows and unconnected views are masked out.
+
+``redundancy``
+    Mean absolute off-diagonal within-view latent correlation. Lower values
+    indicate more orthogonal, less redundant DLV dimensions.
+
+``order_strength``
+    Ordering diagnostic computed from the current structural association
+    matrix. Values near ``1`` mean earlier DLV dimensions have stronger
+    association than later dimensions more consistently. This metric is still
+    reported when ``order=False``, but it is mainly useful when ordered ZCA is
+    enabled.
+
+
+Ordered ZCA
+-----------
+
+Set ``orthogonalization="zca"`` to use ZCA-orthogonalized DLVs. Set
+``order=True`` to order the ZCA basis by structural association.
+
+.. code-block:: python
+
+   struct_model = StructuralModel(
+       Path=Path,
+       model_list=[model_a, model_b],
+       regularizer_list=[None, None],
+       tot_num=n_samples,
+       ndims=16,
+       orthogonalization="zca",
+       order=True,
+   )
+
+During training, the model accumulates an association matrix from connected
+views. At the end of ``fit``, a callback rotates the ZCA basis so the strongest
+structural directions appear first.
+
+To automatically keep only the most structurally associated ordered
+dimensions, set ``order_association_cutoff``:
+
+.. code-block:: python
+
+   struct_model = StructuralModel(
+       Path=Path,
+       model_list=[model_a, model_b],
+       regularizer_list=[None, None],
+       tot_num=n_samples,
+       ndims=32,
+       orthogonalization="zca",
+       order=True,
+       order_association_cutoff=0.95,
+   )
+
+After training, inspect ``struct_model.ndims`` or
+``struct_model.retained_order_dims`` to see how many ordered dimensions were
+kept.
+
+Important constraints:
+
+* ``order=True`` requires ``orthogonalization="zca"``.
+* ``order_association_cutoff`` requires both ``order=True`` and
+  ``orthogonalization="zca"``.
+* ``order_association_cutoff`` must be greater than ``0`` and less than or
+  equal to ``1``.
+
+
+Missing-View Data
+-----------------
+
+``StructuralModel`` can train and evaluate with samples that are missing entire
+views. Mark a missing view by setting the whole row for that view to ``NaN``.
+Rows with partial ``NaN`` values inside a view are rejected.
+
+.. code-block:: python
+
+   view_a = np.random.normal(size=(100, 20)).astype("float32")
+   view_b = np.random.normal(size=(100, 15)).astype("float32")
+
+   # Samples 10 through 19 are missing view B.
+   view_b[10:20, :] = np.nan
+
+   struct_model.fit([view_a, view_b], batch_size=32, epochs=10)
+
+Missing rows are skipped when a view is encoded, scattered back as zero latent
+rows internally, and then masked out of losses and correlation metrics. This
+means a sample can still contribute through the views that are present.
+
+Rules for missing data:
+
+* Only all-``NaN`` rows are treated as missing views.
+* Partial ``NaN`` rows raise an error.
+* Non-floating inputs cannot contain ``NaN`` and are treated as fully present.
+* For a multi-input measurement model, every tensor for that view must mark the
+  same rows as missing.
+* At least two present samples are needed for a connected pair to contribute to
+  correlation metrics.
+
+
+Attention-Weighted MSE
+----------------------
+
+The default reconstruction loss averages squared error over connected target
+views according to ``Path``. With ``attention_mse=True``, the loss instead
+weights connected target views by their per-dimension correlations to the
+source view.
+
+.. code-block:: python
+
+   struct_model = StructuralModel(
+       Path=Path,
+       model_list=[model_a, model_b, model_c],
+       regularizer_list=[None, None, None],
+       tot_num=n_samples,
+       ndims=8,
+       attention_mse=True,
+       attention_gate=0.25,
+   )
+
+Targets whose correlation is below ``attention_gate`` are gated out for that
+dimension. The attention weights are detached from the gradient calculation, so
+they reweight the MSE without directly optimizing the attention scores.
+
+
+Genuine Sparsity
+----------------
+
+Setting ``sparse_l1_list`` enables proximal soft-thresholding on the projection
+weights appended by ``StructuralModel``. Unlike ordinary L1 regularization,
+soft-thresholding can produce exact zeros in the projection matrix.
+
+.. code-block:: python
+
+   struct_model = StructuralModel(
+       Path=Path,
+       model_list=[model_a, model_b],
+       regularizer_list=[None, None],
+       tot_num=n_samples,
+       ndims=8,
+       sparse_l1_list=[0.0, 5e-6],
+   )
+
+Notes:
+
+* ``sparse_l1_list=0.0`` leaves behavior unchanged.
+* A scalar applies the same threshold to every view.
+* A list gives per-view thresholds and must match ``len(model_list)``.
+* In Siamese mode, all sparse thresholds must be identical.
+
+
+Minimal Example
+---------------
+
+.. code-block:: python
 
    import os
 
-   # Force a specific backend before importing Keras. Choose "torch" to run on PyTorch.
    os.environ.setdefault("KERAS_BACKEND", "tensorflow")
 
    import numpy as np
@@ -107,79 +340,74 @@ model for a few epochs, evaluates, and finally inspects the learned latent varia
    from keras import layers
    from deep_lvpm.model import StructuralModel
 
-   # 1. Toy data -------------------------------------------------------------
-   # Generate two independent Gaussian views so the example stays self-contained.
-   rng = np.random.default_rng(42)
    n_samples = 512
-   view_a = rng.normal(size=(n_samples, 8)).astype("float32")  # first modality (8 features)
-   view_b = rng.normal(size=(n_samples, 6)).astype("float32")  # second modality (6 features)
+   rng = np.random.default_rng(42)
+   view_a = rng.normal(size=(n_samples, 8)).astype("float32")
+   view_b = rng.normal(size=(n_samples, 6)).astype("float32")
 
-   # 2. Measurement models --------------------------------------------------
-   # Each measurement model is just a two-layer MLP that outputs latent features.
-   def make_measurement(input_dim, name):
-       inputs = keras.Input(shape=(input_dim,), name=f"{name}_in")
+   def make_measurement_model(input_dim, name):
+       inputs = keras.Input(shape=(input_dim,), name=f"{name}_input")
        x = layers.Dense(16, activation="relu")(inputs)
        x = layers.Dense(16, activation="relu")(x)
-       outputs = layers.Dense(8, name=f"{name}_proj")(x)  # StructuralModel adds its projection head next
+       outputs = layers.Dense(8, name=f"{name}_features")(x)
        return keras.Model(inputs, outputs, name=name)
 
-   model_a = make_measurement(view_a.shape[1], "view_a_encoder")
-   model_b = make_measurement(view_b.shape[1], "view_b_encoder")
+   model_a = make_measurement_model(view_a.shape[1], "view_a_encoder")
+   model_b = make_measurement_model(view_b.shape[1], "view_b_encoder")
 
-   # 3. Structural path -----------------------------------------------------
-   # Two views, one latent factor connecting them (symmetric adjacency).
-   Path = np.array([[0, 1],
-                    [1, 0]], dtype="float32")
-   ndims = 4  # number of DLVs to learn per view
-
-   # 4. Build StructuralModel -----------------------------------------------
-   regularizers = [None, None]  # no extra projection regularization in this toy example
-   tot_num = n_samples          # required for internal covariance scaling
+   Path = np.array(
+       [
+           [0, 1],
+           [1, 0],
+       ],
+       dtype="float32",
+   )
 
    struct_model = StructuralModel(
        Path=Path,
        model_list=[model_a, model_b],
-       regularizer_list=regularizers,
-       tot_num=tot_num,
-       ndims=ndims,
-       orthogonalization="Moore-Penrose",  # stay with the default FactorLayer
-       momentum=0.95,
-       epsilon=1e-4,
-       # Optional: per-view genuine sparsity via soft-thresholding
-       # sparse_l1_list=[0.0, 5e-6],  # example: different sparsity per view
+       regularizer_list=[None, None],
+       tot_num=n_samples,
+       ndims=4,
+       orthogonalization="zca",
+       order=True,
    )
 
-   # Compile with one optimizer per measurement model.
    optimizers = [
        keras.optimizers.Adam(learning_rate=1e-3),
        keras.optimizers.Adam(learning_rate=1e-3),
    ]
    struct_model.compile(optimizers)
 
-   # Training loop (short run just to demonstrate API).
-   history = struct_model.fit(
-       [view_a, view_b],   # inputs must be passed as a list matching model_list order
+   struct_model.fit(
+       [view_a, view_b],
        batch_size=64,
        epochs=5,
        verbose=True,
    )
 
-   # Evaluate returns the tracked metrics: total_loss, cross_metric, mse_loss, redundancy.
    metrics = struct_model.evaluate([view_a, view_b], verbose=False)
    print("Evaluation metrics:", metrics)
 
-   # Predict gives the latent tensor with shape (samples, ndims, n_views).
-    dlvs = struct_model.predict([view_a, view_b], verbose=False)
-    print("Latent tensor shape:", dlvs.shape)
+   dlvs = struct_model.predict([view_a, view_b], verbose=False)
+   print("Latent tensor shape:", dlvs.shape)
 
 
-Genuine sparsity via soft-thresholding
---------------------------------------
+Correlation Matrices
+--------------------
 
-Setting ``sparse_l1_list`` enables a proximal soft-thresholding constraint on the projection weights appended by :class:`StructuralModel` (``FactorLayer`` for ``"Moore-Penrose"`` orthogonalisation or ``ZCALayer`` for ``"zca"``).  Unlike conventional L1 penalties used with gradient descent—which bias weights toward zero but rarely make them exactly zero—the soft-thresholding operator applies the L1 proximal mapping to the weights after each update.  This produces exact zeros below the chosen threshold, yielding interpretable and truly sparse projections.
+Use ``calculate_corrmat`` to inspect cross-view correlations for each latent
+dimension after prediction.
 
-Notes:
+.. code-block:: python
 
-* ``sparse_l1_list=0.0`` (default) leaves behaviour unchanged (no thresholding).
-* Provide a scalar to apply the same sparsity to all views, or a list for per-view control.
-* In Siamese configurations, all values must be identical because the projection head is shared.
+   dlvs = struct_model.predict([view_a, view_b], verbose=False)
+   corr_matrices = struct_model.calculate_corrmat(dlvs)
+
+   for dim_index, corr_matrix in enumerate(corr_matrices):
+       print("DLV dimension:", dim_index)
+       print(corr_matrix)
+
+``calculate_corrmat`` expects a 3D tensor with shape
+``(n_samples, ndims, n_views)`` and returns one ``(n_views, n_views)``
+correlation matrix per DLV dimension.
