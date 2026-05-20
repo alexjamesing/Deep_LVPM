@@ -2,3 +2,4 @@
 build/
 *.egg-info/
 __pycache__/
+/deep_lvpm/data/dlvpm_tcga_survival_demo/

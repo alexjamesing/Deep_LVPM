@@ -3,9 +3,11 @@
   <img src="dlvpm_logo_final.png" alt="Deep LVPM logo" width="35%">
 </p>
 
-Deep Latent Variable Path Modelling (DLVPM) is a method for path/structural equation modelling utilising deep neural networks. The aim of the method is to connect different data types together via sets of orthogonal deep latent variables (DLVs). Full [documentation](https://deep-lvpm.readthedocs.io/en/latest/) for this package can be found here. This work has now been published in the [paper](https://www.nature.com/articles/s42256-025-01052-4). 
+Deep Latent Variable Path Modelling (DLVPM) is a method for path/structural equation modelling utilising deep neural networks. The aim of the method is to connect different data types together via sets of orthogonal deep latent variables (DLVs). The method can also be used in a siamese network configuration to learn representations of a single data type. Full [documentation](https://deep-lvpm.readthedocs.io/en/latest/) for this package can be found here. This work has now been published in the [paper](https://www.nature.com/articles/s42256-025-01052-4). 
 
 Backend-agnostic with Keras 3: DLVPM is implemented on Keras 3 and runs backend-agnostically on either TensorFlow or PyTorch; select your preferred backend by installing the corresponding extra (e.g., tf-cpu, tf-gpu, tf-apple, torch-cpu, torch-apple, or preinstall CUDA PyTorch for torch-gpu) and, if needed, set KERAS_BACKEND=tensorflow or KERAS_BACKEND=torch. The high-level Keras API (model.fit, model.evaluate, etc.) is unchanged across backends.
+
+This package also contains implementations of VicReg, Deep Generalised Canonical Correlation Analysis, LeJEPA and CLIP/SimCLR. Each of these methods can be used to connect multi-modal datasets, or to learn representations of a single data type.
 
 NOTE: A pure PyTorch version of this project, contributed by Johannes Scherer, is available on the separate [pytorch branch](https://github.com/alexjamesing/Deep_LVPM/tree/pytorch).
 

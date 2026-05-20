@@ -870,10 +870,10 @@ class StructuralModel(keras.Model):
             zeros = self._zero_latents(batch_size, dtype=dtype)
             return tf.tensor_scatter_nd_update(zeros, tf.expand_dims(row_indices, axis=1), values)
 
-        return self._scatter_rows_torch(values, row_indices, dtype=dtype, reference_tensor=reference_tensor)
+        return self._scatter_rows_torch(values, row_indices, batch_size, dtype=dtype, reference_tensor=reference_tensor)
 
 
-    def _scatter_rows_torch(self, values, row_indices, dtype=None, reference_tensor=None):
+    def _scatter_rows_torch(self, values, row_indices, batch_size=None, dtype=None, reference_tensor=None):
         """Torch-only scatter helper used by the backend-agnostic wrapper."""
         target_device = reference_tensor.device if reference_tensor is not None else values.device
         if values.device != target_device:
@@ -881,15 +881,22 @@ class StructuralModel(keras.Model):
         if row_indices.device != target_device:
             row_indices = row_indices.to(target_device)
 
+        if batch_size is None:
+            zero_rows = int(row_indices.max().item()) + 1 if row_indices.numel() else 0
+        elif torch.is_tensor(batch_size):
+            zero_rows = int(batch_size.item())
+        else:
+            zero_rows = int(batch_size)
+
         if reference_tensor is not None:
             zeros = torch.zeros(
-                (reference_tensor.shape[0], self.ndims),
+                (zero_rows, self.ndims),
                 dtype=values.dtype if isinstance(dtype, str) else values.dtype,
                 device=target_device,
             )
         else:
             zeros = torch.zeros(
-                (int(row_indices.max().item()) + 1 if row_indices.numel() else 0, self.ndims),
+                (zero_rows, self.ndims),
                 dtype=values.dtype if isinstance(dtype, str) else (dtype or values.dtype),
                 device=target_device,
             )

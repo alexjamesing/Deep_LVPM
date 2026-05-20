@@ -132,7 +132,7 @@ class CLIP(keras.Model):
         ]
         Z = ops.stack(zs, axis=-1)  # (B, d, M)
         eps = ops.convert_to_tensor(1e-7, dtype=ops.dtype(Z))
-        denom = ops.sqrt(ops.sum(ops.square(Z), axis=1, keepdims=True)) + eps
+        denom = ops.sqrt(ops.sum(ops.square(Z), axis=1, keepdims=True) + eps)
         return Z / denom
 
     def _clip_pair_loss(self, z_m, z_n, scale):

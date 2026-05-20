@@ -162,7 +162,7 @@ batch_size  = 256
 epochs      = 300
 total_steps = int(rnaseq.shape[0] / batch_size) * epochs
 
-init_lr, final_lr = 1e-5, 1e-4
+init_lr, final_lr = 1e-4, 1e-5
 
 lr_schedule = optimizers.schedules.ExponentialDecay(
     initial_learning_rate=init_lr,
