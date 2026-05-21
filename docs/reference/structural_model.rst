@@ -35,8 +35,6 @@ Constructor
        is_siamese=False,
        diag_offset=1e-3,
        sparse_l1_list=0.0,
-       attention_mse=False,
-       attention_gate=0.3,
        order=False,
        order_association_cutoff=None,
        **kwargs,
@@ -101,15 +99,6 @@ Parameters
     Proximal L1 soft-thresholding strength for the appended projection weights.
     Use a scalar to apply the same threshold to all views, a list with one
     value per view, or ``0.0`` for no sparsity.
-
-``attention_mse``
-    If ``True``, reconstruction loss uses attention-weighted MSE instead of
-    the standard masked MSE. Attention weights are based on per-dimension
-    correlations to connected target views.
-
-``attention_gate``
-    Minimum correlation required for a connected target view to contribute to
-    the attention-weighted MSE. Must lie in ``[-1, 1]``.
 
 ``order``
     If ``True``, enables structural ordering for ZCA DLVs. Ordering rotates the
@@ -273,31 +262,6 @@ Rules for missing data:
   same rows as missing.
 * At least two present samples are needed for a connected pair to contribute to
   correlation metrics.
-
-
-Attention-Weighted MSE
-----------------------
-
-The default reconstruction loss averages squared error over connected target
-views according to ``Path``. With ``attention_mse=True``, the loss instead
-weights connected target views by their per-dimension correlations to the
-source view.
-
-.. code-block:: python
-
-   struct_model = StructuralModel(
-       Path=Path,
-       model_list=[model_a, model_b, model_c],
-       regularizer_list=[None, None, None],
-       tot_num=n_samples,
-       ndims=8,
-       attention_mse=True,
-       attention_gate=0.25,
-   )
-
-Targets whose correlation is below ``attention_gate`` are gated out for that
-dimension. The attention weights are detached from the gradient calculation, so
-they reweight the MSE without directly optimizing the attention scores.
 
 
 Genuine Sparsity

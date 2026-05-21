@@ -17,6 +17,8 @@ If you find Deep LVPM useful, please consider giving the project a `star <https:
    reference/tuner
    tutorials/tcga
    tutorials/tcga_torch
+   tutorials/tcga_survival
+   tutorials/tcga_survival_torch
    tutorials/mnist
    tutorials/siamese
    tutorials/coco

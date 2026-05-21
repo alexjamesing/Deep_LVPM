@@ -18,14 +18,14 @@ DATA_ZIP = PACKAGE_DATA_DIR / "dlvpm_tcga_survival_demo.zip"
 
 NDIMS = 100
 BATCH_SIZE = 2048
-EPOCHS = 50
+EPOCHS = 5
 LEARNING_RATE = 1e-4
 
 MULTIMODAL_METHODS = ["CLIP", "VICReg", "LeJEPA", "DGCCA"]
 
-GENE_MIXER_LATENT_DIM = 512
-GENE_MIXER_RANK = 512
-GENE_MIXER_DEPTH = 10
+GENE_MIXER_LATENT_DIM = 256
+GENE_MIXER_RANK = 128
+GENE_MIXER_DEPTH = 5
 GENE_MIXER_DROPOUT = 0.30
 
 NEURAL_COX_DROPOUT = 0.60
@@ -137,7 +137,7 @@ def fit_penalised_cox(method_name, train_features, test_features):
     test_cindex = concordance_index(test_times, -test_risk, test_events)
 
     print(f"{method_name}: train C-index={train_cindex:.3f}, test C-index={test_cindex:.3f}")
-    return {"method": method_name, "train_c_index": train_cindex, "test_c_index": test_cindex}
+    return {"method": method_name, "train_c_index": train_cindex, "test_c_index": test_cindex, "test_risk": test_risk}
 
 
 if not (CACHE_DIR / "cache_config.json").exists():
@@ -178,6 +178,15 @@ for view_key in available_views:
 train_view_present = np.column_stack(train_view_present).astype("float32")
 test_view_present = np.column_stack(test_view_present).astype("float32")
 
+complete_train_mask = train_view_present.all(axis=1)
+complete_test_mask = test_view_present.all(axis=1)
+X_train = [train_view[complete_train_mask] for train_view in X_train]
+X_test = [test_view[complete_test_mask] for test_view in X_test]
+train_view_present = train_view_present[complete_train_mask]
+test_view_present = test_view_present[complete_test_mask]
+train_split = train_split.loc[complete_train_mask].reset_index(drop=True)
+test_split = test_split.loc[complete_test_mask].reset_index(drop=True)
+
 time_col = f"{SURVIVAL_ENDPOINT}_time_days"
 event_col = f"{SURVIVAL_ENDPOINT}_event"
 train_times = train_split[time_col].to_numpy(dtype="float32")
@@ -189,8 +198,8 @@ train_y = np.column_stack([train_times, train_events]).astype("float32")
 n_views = len(available_views)
 train_counts = train_view_present.sum(axis=1)
 test_counts = test_view_present.sum(axis=1)
-if train_counts.min() < 1 or test_counts.min() < 1:
-    raise ValueError("Every patient must have at least one available data view.")
+if not train_view_present.all() or not test_view_present.all():
+    raise ValueError("All patients should have every data view after complete-case filtering.")
 
 print(f"Training patients: {len(train_split)}")
 print(f"Test patients:     {len(test_split)}")
@@ -283,6 +292,7 @@ results.append({
     "method": "Direct multimodal neural Cox",
     "train_c_index": concordance_index(train_times, -train_risk, train_events),
     "test_c_index": concordance_index(test_times, -test_risk, test_events),
+    "test_risk": test_risk,
 })
 print(
     "Direct multimodal neural Cox: "
@@ -332,6 +342,22 @@ for method_name in MULTIMODAL_METHODS:
     gc.collect()
 
 
-results_table = pd.DataFrame(results).sort_values("test_c_index", ascending=False).reset_index(drop=True)
+results_table = pd.DataFrame(results).drop(columns=["test_risk"]).sort_values("test_c_index", ascending=False).reset_index(drop=True)
 print("\nSurvival prediction results")
 print(results_table.to_string(index=False, formatters={"train_c_index": "{:.3f}".format, "test_c_index": "{:.3f}".format}))
+
+import matplotlib.pyplot as plt
+rng = np.random.default_rng(RANDOM_SEED)
+plot_rows = []
+for result in results:
+    boot = []
+    for _ in range(1000):
+        idx = rng.integers(0, len(test_times), len(test_times))
+        boot.append(concordance_index(test_times[idx], -result["test_risk"][idx], test_events[idx]))
+    plot_rows.append((result["method"], np.mean(boot), *np.percentile(boot, [2.5, 97.5])))
+plot_df = pd.DataFrame(plot_rows, columns=["method", "mean_c_index", "ci_low", "ci_high"])
+plt.errorbar(plot_df["method"], plot_df["mean_c_index"], yerr=[plot_df["mean_c_index"] - plot_df["ci_low"], plot_df["ci_high"] - plot_df["mean_c_index"]], fmt="o", capsize=4)
+plt.ylabel("Test C-index")
+plt.xticks(rotation=45, ha="right")
+plt.tight_layout()
+plt.show()

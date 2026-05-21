@@ -186,10 +186,6 @@ def check_internal_vs_posthoc_rotation(model, X, batch_size=None, label="train")
 
 
 best_model.fit(X_full, batch_size=batch_size, epochs=epochs, verbose=True)
-opt_list = [keras.optimizers.Adam(learning_rate=1e-5) for _ in range(len(view_models))]
-best_model.compile(opt_list)
-best_model.fit(X_full, batch_size=batch_size, epochs=50, verbose=True)
-
 
 train_metrics = best_model.evaluate(X_train, verbose=False, return_dict=True)
 val_metrics = best_model.evaluate(X_val, verbose=False, return_dict=True)

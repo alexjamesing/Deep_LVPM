@@ -112,8 +112,6 @@ class StructuralModel(keras.Model):
         is_siamese=False,
         diag_offset=1e-3,
         sparse_l1_list=0.0,
-        attention_mse=False,
-        attention_gate=0.3,
         order=False,
         order_association_cutoff=None,
         **kwargs,
@@ -149,10 +147,6 @@ class StructuralModel(keras.Model):
         self.diag_offset = diag_offset
         n_views = len(model_list)
         self.sparse_l1_list = self._normalize_sparse_l1_list(sparse_l1_list, n_views)
-        self.attention_mse = bool(attention_mse)
-        self.attention_gate = float(attention_gate)
-        if not (-1.0 <= self.attention_gate <= 1.0):
-            raise ValueError("attention_gate must lie in the interval [-1, 1].")
         self.order = bool(order)
         if self.order and self.orthogonalization != 'zca':
             raise ValueError("'order' is only available when orthogonalization='zca'.")
@@ -1054,7 +1048,7 @@ class StructuralModel(keras.Model):
                 batch_size,
                 dtype=ops.dtype(y_pred_obs),
             )
-            mse_loss = self.reconstruction_loss(y, y_pred, vie, view_present)
+            mse_loss = self.mse_loss(y, y_pred, vie, view_present)
             internal_loss = tf.add_n(model.losses) if model.losses else tf.cast(0.0, mse_loss.dtype)
             loss = mse_loss + internal_loss
 
@@ -1082,7 +1076,7 @@ class StructuralModel(keras.Model):
             dtype=y_pred_obs.dtype,
             reference_tensor=reference_tensor,
         )
-        mse_loss = self.reconstruction_loss(y, y_pred, vie, view_present)
+        mse_loss = self.mse_loss(y, y_pred, vie, view_present)
 
         if model.losses:
             internal_loss = torch.stack(
@@ -1356,7 +1350,7 @@ class StructuralModel(keras.Model):
                         self._shape_fn(y_ortho)[0],
                         dtype=ops.dtype(y_pred_obs_norm),
                     )
-                    mse_loss = self.reconstruction_loss(y_ortho, y_pred, vie, view_present)
+                    mse_loss = self.mse_loss(y_ortho, y_pred, vie, view_present)
                     internal_losses = self.model_list[vie].losses
                     if internal_losses:
                         internal_loss = ops.sum(
@@ -1397,7 +1391,7 @@ class StructuralModel(keras.Model):
                         dtype=y_pred_obs_norm.dtype,
                         reference_tensor=self._reference_input(inputs_nested[vie]),
                     )
-                    mse_loss = self.reconstruction_loss(y_ortho, y_pred, vie, view_present)
+                    mse_loss = self.mse_loss(y_ortho, y_pred, vie, view_present)
 
                     internal_losses = self.model_list[vie].losses
                     if internal_losses:
@@ -1488,95 +1482,6 @@ class StructuralModel(keras.Model):
 
         mse_loss = ops.sum(se_mean_masked) / 2.0
         return mse_loss
-
-    def attention_mse_loss(self, y_true, y_pred, vie, view_present):
-
-        """
-        Mean squared error weighted by per-dimension softmax-normalised
-        Pearson correlations across connected target views.
-        """
-
-        dtype = ops.dtype(y_true)
-        eps = ops.convert_to_tensor(self.epsilon, dtype=dtype)
-        one = ops.convert_to_tensor(1.0, dtype=dtype)
-        zero = ops.convert_to_tensor(0.0, dtype=dtype)
-        mask_penalty = ops.convert_to_tensor(30.0, dtype=dtype)
-        gate_threshold = ops.convert_to_tensor(self.attention_gate, dtype=dtype)
-
-        source_mask = ops.cast(view_present[:, vie], dtype)
-        target_mask = ops.cast(view_present, dtype)
-        pair_mask = ops.expand_dims(source_mask, axis=1) * target_mask
-
-        y_pred_exp = ops.expand_dims(y_pred, axis=2)  # (batch, ndims, 1)
-        sq_error = ops.square(y_true - y_pred_exp)
-        sq_error = sq_error * ops.expand_dims(pair_mask, axis=1)
-
-        counts = ops.sum(pair_mask, axis=0)
-        counts_safe = ops.maximum(counts, one)
-        se_mean = ops.sum(sq_error, axis=0) / ops.expand_dims(counts_safe, axis=0)
-
-        corr_scores = []
-        valid_targets = []
-        path_weights = []
-
-        for target_vie in range(len(self.model_list)):
-            y_true_target = y_true[:, :, target_vie]
-            pair_mask_target = pair_mask[:, target_vie]
-            pair_mask_exp = ops.expand_dims(pair_mask_target, axis=1)
-            pair_count = counts[target_vie]
-            pair_count_safe = counts_safe[target_vie]
-
-            y_true_mean = ops.sum(y_true_target * pair_mask_exp, axis=0) / pair_count_safe
-            y_pred_mean = ops.sum(y_pred * pair_mask_exp, axis=0) / pair_count_safe
-
-            y_true_centered = (y_true_target - y_true_mean) * pair_mask_exp
-            y_pred_centered = (y_pred - y_pred_mean) * pair_mask_exp
-
-            denom_true = ops.sqrt(ops.sum(ops.square(y_true_centered), axis=0) + eps)
-            denom_pred = ops.sqrt(ops.sum(ops.square(y_pred_centered), axis=0) + eps)
-            corr_dim = ops.sum(
-                (y_true_centered / denom_true) * (y_pred_centered / denom_pred),
-                axis=0,
-            )
-
-            if self._path_array.ndim == 3:
-                path_weight = ops.cast(self.Path[vie, target_vie, :], dtype)
-            else:
-                path_weight = ops.cast(self.Path[vie, target_vie], dtype) * ops.ones(
-                    (self.ndims,),
-                    dtype=dtype,
-                )
-
-            connected = ops.cast(path_weight > zero, dtype)
-            valid_target = connected * ops.cast(pair_count > one, dtype)
-
-            corr_scores.append(corr_dim)
-            valid_targets.append(valid_target)
-            path_weights.append(path_weight)
-
-        corr_scores = ops.stack(corr_scores, axis=1)   # (ndims, n_views)
-        valid_targets = ops.stack(valid_targets, axis=1)  # (ndims, n_views)
-        path_weights = ops.stack(path_weights, axis=1)  # (ndims, n_views)
-
-        gated_targets = valid_targets * ops.cast(corr_scores >= gate_threshold, dtype)
-        masked_scores = corr_scores - (one - gated_targets) * mask_penalty
-        attention_weights = ops.softmax(masked_scores, axis=1)
-        comparison_count = ops.maximum(
-            ops.sum(gated_targets, axis=1, keepdims=True),
-            one,
-        )
-        attention_weights = attention_weights * comparison_count
-        attention_weights = attention_weights * path_weights * gated_targets
-        attention_weights = self._detach_tensor(attention_weights)
-
-        mse_loss = ops.sum(se_mean * attention_weights) / 2.0
-        return mse_loss
-
-    def reconstruction_loss(self, y_true, y_pred, vie, view_present):
-        if self.attention_mse:
-            return self.attention_mse_loss(y_true, y_pred, vie, view_present)
-        return self.mse_loss(y_true, y_pred, vie, view_present)
-
 
     def corr_metric(self, y_true, y_pred, vie, view_present):
         
@@ -1828,8 +1733,6 @@ class StructuralModel(keras.Model):
             "is_siamese": self.is_siamese,
             "diag_offset": self.diag_offset,
             "sparse_l1_list": self.sparse_l1_list,
-            "attention_mse": self.attention_mse,
-            "attention_gate": self.attention_gate,
             "order": self.order,
             "order_association_cutoff": self.order_association_cutoff,
         }

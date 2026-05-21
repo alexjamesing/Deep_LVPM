@@ -535,6 +535,32 @@ class DGCCA(keras.Model):
         # TensorFlow can use float64 for GCCA algebra; torch/MPS needs float32.
         return ops.cast(tensor, self._gcca_work_dtype)
 
+    def _pad_last_axis_to_ndims(self, tensor):
+        backend = keras.backend.backend()
+        if backend == "tensorflow":
+            current_width = tf.shape(tensor)[-1]
+            missing_width = tf.maximum(self.ndims - current_width, 0)
+            zero = tf.constant(0, dtype=tf.int32)
+            paddings = tf.stack(
+                [
+                    tf.stack([zero, zero]),
+                    tf.stack([zero, missing_width]),
+                ]
+            )
+            tensor = tf.pad(tensor, paddings)
+            return tensor[:, : self.ndims]
+
+        if backend == "torch":
+            tensor = self._torch_value(tensor)
+            current_width = tensor.shape[-1]
+            if current_width < self.ndims:
+                tensor = torch.nn.functional.pad(tensor, (0, self.ndims - current_width))
+            return tensor[:, : self.ndims]
+
+        raise NotImplementedError(
+            f"Backend '{backend}' not supported for DGCCA rank padding."
+        )
+
     def _symmetrize(self, matrix):
         return 0.5 * (matrix + ops.transpose(matrix))
 
@@ -730,9 +756,12 @@ class DGCCA(keras.Model):
         u_views = []
         for y_v, cov_inv_v in zip(y_views, cov_inv_views):
             u_v = ops.matmul(cov_inv_v, ops.matmul(y_v, ops.transpose(G)))  # (d, r_eff)
+            # Short batches can estimate only min(batch_size, ndims) directions.
+            # Keep the representation width stable for predict/evaluate outputs.
+            u_v = self._pad_last_axis_to_ndims(u_v)
             u_views.append(u_v)
-            shared_v = ops.matmul(ops.transpose(u_v), y_v)  # (r_eff, B)
-            shared_view_estimates.append(ops.transpose(shared_v))  # (B, r_eff)
+            shared_v = ops.matmul(ops.transpose(u_v), y_v)  # (d, B)
+            shared_view_estimates.append(ops.transpose(shared_v))  # (B, d)
 
         return top_eigenvalues, shared_view_estimates, u_views, view_means
 
