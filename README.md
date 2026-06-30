@@ -1,6 +1,6 @@
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/alexjamesing/Deep_LVPM/main/dlvpm_logo_final.png" alt="Deep LVPM logo" width="35%">
+  <img src="https://raw.githubusercontent.com/alexjamesing/Deep_LVPM/master/dlvpm_logo_final.png" alt="Deep LVPM logo" width="35%">
 </p>
 
 [![Tests](https://github.com/alexjamesing/Deep_LVPM/actions/workflows/install-matrix.yaml/badge.svg)](https://github.com/alexjamesing/Deep_LVPM/actions/workflows/install-matrix.yaml)
@@ -37,7 +37,7 @@ The current default branch is the native PyTorch version of the toolbox. Earlier
 
 This package also contains implementations of Deep Generalised Canonical Correlation Analysis and multimodal adaptations of VICReg, LeJEPA, and CLIP/SimCLR. Each method can be used to connect multimodal datasets or to learn representations of a single data type.
 
-![Chord animation](https://raw.githubusercontent.com/alexjamesing/Deep_LVPM/main/chord_animation.gif)
+![Chord animation](https://raw.githubusercontent.com/alexjamesing/Deep_LVPM/master/chord_animation.gif)
 
 The animation above shows model training in progress on a three-factor DLVPM model linking omics and imaging data types from lung cancer patients. The dataset used for this example is included in the package.
 
