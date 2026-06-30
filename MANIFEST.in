@@ -1,0 +1,6 @@
+include CITATION.cff
+include LICENSE
+include Licence.txt
+include README.md
+recursive-include docs *.py *.rst *.txt
+prune docs/_build

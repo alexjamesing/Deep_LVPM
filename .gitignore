@@ -1,0 +1,16 @@
+.DS_Store
+build/
+dist/
+docs/_build/
+*.egg-info/
+*.py[cod]
+__pycache__/
+.pytest_cache/
+
+# Downloaded tutorial/demo data. Keep only the tiny packaged TCGA examples.
+/data/
+/deep_lvpm/tutorial/data/
+/deep_lvpm/data/*
+!/deep_lvpm/data/__init__.py
+!/deep_lvpm/data/Lung_multiomics_sample_train.npz
+!/deep_lvpm/data/Lung_multiomics_sample_test.npz

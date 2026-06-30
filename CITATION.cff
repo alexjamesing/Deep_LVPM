@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use Deep LVPM, please cite the paper and the software."
+title: "Deep LVPM"
+version: "0.3.0"
+doi: "10.1038/s42256-025-01052-4"
+repository-code: "https://github.com/alexjamesing/Deep_LVPM"
+license: "MIT"
+authors:
+  - family-names: "Ing"
+    given-names: "Alex"
+preferred-citation:
+  type: article
+  title: "Integrating multimodal cancer data using deep latent variable path modelling"
+  doi: "10.1038/s42256-025-01052-4"
+  journal: "Nature Machine Intelligence"
+  volume: 7
+  start: 1053
+  end: 1075
+  year: 2025
+  authors:
+    - family-names: "Ing"
+      given-names: "Alex"
+    - family-names: "Andrades"
+      given-names: "Alvaro"
+    - family-names: "Cosenza"
+      given-names: "Marco Raffaele"
+    - family-names: "Korbel"
+      given-names: "Jan O."

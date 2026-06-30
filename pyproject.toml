@@ -1,0 +1,96 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deep-lvpm"
+version = "0.3.0"
+description = "PyTorch toolbox for multimodal representation learning and Deep Latent Variable Path Modelling"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = "MIT"
+license-files = ["LICENSE", "Licence.txt"]
+authors = [
+    { name = "Alex James Ing" },
+]
+keywords = [
+    "multimodal learning",
+    "latent variable model",
+    "PyTorch",
+    "TCGA",
+    "omics",
+    "structural equation modelling",
+    "canonical correlation analysis",
+    "integrated gradients",
+    "CLIP",
+    "VICReg",
+    "LeJEPA",
+    "DGCCA",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "torch>=2.2",
+    "numpy>=1.26",
+    "pydot>=4.0.1",
+]
+
+[project.optional-dependencies]
+plot = [
+    "matplotlib>=3.8",
+]
+survival = [
+    "matplotlib>=3.8",
+    "pandas>=2.2",
+    "lifelines>=0.30",
+]
+tutorials = [
+    "matplotlib>=3.8",
+    "pandas>=2.2",
+    "scikit-learn>=1.5",
+    "torchvision>=0.17",
+    "pillow>=10.0",
+    "lifelines>=0.30",
+    "tqdm>=4.67",
+]
+coco = [
+    "matplotlib>=3.8",
+    "torchvision>=0.17",
+    "pillow>=10.0",
+    "transformers>=4.40,<5",
+    "fiftyone>=1.0",
+    "tqdm>=4.67",
+]
+docs = [
+    "sphinx",
+    "furo",
+]
+dev = [
+    "pytest>=8.0",
+    "build>=1.0",
+    "twine>=5.0",
+    "sphinx",
+    "furo",
+]
+
+[project.urls]
+Homepage = "https://github.com/alexjamesing/Deep_LVPM"
+Documentation = "https://deep-lvpm.readthedocs.io/en/latest/"
+Source = "https://github.com/alexjamesing/Deep_LVPM"
+Issues = "https://github.com/alexjamesing/Deep_LVPM/issues"
+Paper = "https://doi.org/10.1038/s42256-025-01052-4"
+
+[tool.setuptools.packages.find]
+include = ["deep_lvpm*"]
+
+[tool.setuptools.package-data]
+"deep_lvpm.data" = ["*.npz"]

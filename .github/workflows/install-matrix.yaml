@@ -1,0 +1,71 @@
+name: Validate package
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.11"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  install:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            install_target: "."
+            label: linux-core
+          - os: macos-14
+            install_target: "."
+            label: macos-core
+          - os: windows-latest
+            install_target: "."
+            label: windows-core
+          - os: ubuntu-latest
+            install_target: ".[tutorials]"
+            label: linux-tutorials
+          - os: ubuntu-latest
+            install_target: ".[dev,docs]"
+            label: linux-dev-docs
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install Deep LVPM
+        run: python -m pip install --upgrade --no-cache-dir "${{ matrix.install_target }}"
+
+      - name: Verify core imports
+        run: |
+          python -c "import deep_lvpm; print('Loaded deep_lvpm')"
+          python -c "import torch; print(f'Loaded torch=={torch.__version__}')"
+
+      - name: Verify tutorial imports
+        if: ${{ matrix.label == 'linux-tutorials' }}
+        run: |
+          python -c "import pandas, sklearn, lifelines, torchvision; print('Loaded tutorial dependencies')"
+
+      - name: Verify docs and dev imports
+        if: ${{ matrix.label == 'linux-dev-docs' }}
+        run: |
+          python -c "import pytest, sphinx; print('Loaded docs/dev dependencies')"
+
+      - name: Run tests
+        if: ${{ matrix.label == 'linux-dev-docs' }}
+        run: python -m pytest
