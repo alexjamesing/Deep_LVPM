@@ -4,9 +4,7 @@
 </p>
 
 [![Tests](https://github.com/alexjamesing/Deep_LVPM/actions/workflows/install-matrix.yaml/badge.svg)](https://github.com/alexjamesing/Deep_LVPM/actions/workflows/install-matrix.yaml)
-[![Documentation](https://readthedocs.org/projects/deep-lvpm/badge/?version=latest)](https://deep-lvpm.readthedocs.io/en/latest/)
-[![PyPI](https://img.shields.io/pypi/v/deep-lvpm.svg)](https://pypi.org/project/deep-lvpm/)
-[![Python](https://img.shields.io/pypi/pyversions/deep-lvpm.svg)](https://pypi.org/project/deep-lvpm/)
+[![Documentation](https://readthedocs.org/projects/deep-lvpm/badge/?version=master)](https://deep-lvpm.readthedocs.io/en/master/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![DOI](https://img.shields.io/badge/DOI-10.1038%2Fs42256--025--01052--4-blue)](https://doi.org/10.1038/s42256-025-01052-4)
 
@@ -14,7 +12,7 @@
 
 Deep LVPM is a PyTorch toolbox for multimodal representation learning and Deep Latent Variable Path Modelling.
 
-Deep Latent Variable Path Modelling (DLVPM) is a method for path/structural equation modelling using deep neural networks. It connects different data types through sets of orthogonal deep latent variables (DLVs), and can also be used in a Siamese configuration to learn representations of a single data type. Full documentation is available at [deep-lvpm.readthedocs.io](https://deep-lvpm.readthedocs.io/en/latest/), and the method is described in the [Nature Machine Intelligence paper](https://doi.org/10.1038/s42256-025-01052-4).
+Deep Latent Variable Path Modelling (DLVPM) is a method for path/structural equation modelling using deep neural networks. It connects different data types through sets of orthogonal deep latent variables (DLVs), and can also be used in a Siamese configuration to learn representations of a single data type. Full documentation is available at [deep-lvpm.readthedocs.io](https://deep-lvpm.readthedocs.io/en/master/), and the method is described in the [Nature Machine Intelligence paper](https://doi.org/10.1038/s42256-025-01052-4).
 
 DLVPM is implemented directly in PyTorch. The high-level toolbox API (`model.fit`, `model.evaluate`, `model.predict`, etc.) is retained for convenience, but these methods use ordinary PyTorch commands internally (`model.train()`, forward passes, loss calculation, `loss.backward()`, `optimizer.step()`, `model.eval()`, and `torch.no_grad()`).
 
