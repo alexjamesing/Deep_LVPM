@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deep-lvpm"
-version = "0.3.0"
+version = "0.2.0"
 description = "PyTorch toolbox for multimodal representation learning and Deep Latent Variable Path Modelling"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
