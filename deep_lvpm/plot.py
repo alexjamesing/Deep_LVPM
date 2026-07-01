@@ -1,4 +1,5 @@
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.patches import Wedge
 from matplotlib.collections import LineCollection
@@ -31,6 +32,13 @@ def _to_numpy(x):
 
     # Generic fallback
     return np.asarray(x)
+
+
+def _get_colormap(colormap_name):
+    """Return a Matplotlib colormap across old and new Matplotlib versions."""
+    if hasattr(matplotlib, "colormaps"):
+        return matplotlib.colormaps.get_cmap(colormap_name)
+    return cm.get_cmap(colormap_name)
 
 
 # def plot_correlation_chord_gradient(
@@ -366,7 +374,7 @@ def plot_correlation_chord_row(
     outer_radius = 1.1
 
     # Pastel colors for nodes, sampled along the colormap as a smooth gradient
-    cmap_nodes = cm.get_cmap(node_cmap_name)
+    cmap_nodes = _get_colormap(node_cmap_name)
     node_colors = [cmap_nodes(i / max(n - 1, 1)) for i in range(n)]
 
     # Precompute node positions

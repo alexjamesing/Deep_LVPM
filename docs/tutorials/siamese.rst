@@ -51,9 +51,9 @@ clear error if the requested accelerator is unavailable.
 
    SEED = 1337
    BATCH_SIZE = 2048
-   EPOCHS = 10
+   EPOCHS = 100
    WEIGHT_DECAY = 0
-   NDIMS = 512
+   NDIMS = 1024
    LEARNING_RATE = 1e-4
    MAX_GRADIENT_NORM = 1
    REQUESTED_DEVICE = "auto"
